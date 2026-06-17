@@ -1,0 +1,1611 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>RE:COLLAR — Battle Demo</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #05050a;
+    overflow: hidden;
+    font-family: "Yu Gothic", "Hiragino Kaku Gothic Pro", "Segoe UI", sans-serif;
+  }
+  #game-root {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  /* Subtle vignette + scanline mood over the canvas */
+  #fx-overlay {
+    position: absolute; inset: 0; pointer-events: none; z-index: 10;
+    background:
+      radial-gradient(ellipse at center, rgba(0,0,0,0) 55%, rgba(0,0,0,0.55) 100%);
+    mix-blend-mode: multiply;
+  }
+  #scanlines {
+    position: absolute; inset: 0; pointer-events: none; z-index: 11; opacity: 0.10;
+    background: repeating-linear-gradient(
+      to bottom, rgba(255,255,255,0.0) 0px, rgba(255,255,255,0.0) 2px,
+      rgba(0,0,0,0.8) 3px, rgba(0,0,0,0.0) 4px);
+  }
+  canvas { image-rendering: pixelated; }
+  #loading-fallback {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #7a7a9a; font-size: 14px; letter-spacing: 2px; z-index: 1;
+  }
+</style>
+</head>
+<body>
+  <div id="game-root">
+    <div id="loading-fallback">LOADING ENGINE…</div>
+  </div>
+  <div id="fx-overlay"></div>
+  <div id="scanlines"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+  <script>
+  /* =====================================================================
+     RE:COLLAR — Battle Demo
+     Timing-based turn battle built on Phaser 3. Single-file, no bundler.
+     Author: portfolio build for Cygames internship.
+     ===================================================================== */
+
+  const GAME_W = 960, GAME_H = 540;
+  const GROUND_Y = 430;
+  const FONT = '"Yu Gothic", "Hiragino Kaku Gothic Pro", "Segoe UI", sans-serif';
+
+  // Color palette
+  const C = {
+    gold:   '#ffd54a', goldN: 0xffd54a,
+    green:  '#54e08a', greenN: 0x54e08a,
+    blue:   '#5ab0ff', blueN: 0x5ab0ff,
+    red:    '#ff5a6e', redN: 0xff5a6e,
+    white:  '#ffffff',
+    ink:    '#0a0a14',
+  };
+
+  // ---- Encounter definitions (a 2-battle gauntlet) -------------------
+  const ENCOUNTERS = [
+    {
+      id: 'phantom', name: '過去の幻影', tag: 'PHANTOMS OF THE PAST',
+      texture: 'enemy1', idleAnim: null, bg: 'stage1', bgm: 'bgm_battle', // Winning Road
+      // 2体: defeated one at a time (waves).
+      waves: [{ hp: 120, atk: 17 }, { hp: 155, atk: 19 }],
+      special: false, specialEvery: 0,
+      parrySpeed: 370, telegraph: 820, scale: 2.0, yOff: 0,
+      flavor: '旧王都に巣食う、過ぎ去りし日の亡霊。',
+    },
+    {
+      id: 'knight', name: '暗黒騎士 アデル', tag: 'THE DARK KNIGHT',
+      texture: 'enemy2', idleAnim: null, bg: 'stage2', bgm: 'bgm_boss', // Strike the Despair
+      waves: [{ hp: 360, atk: 27, specialAtk: 48 }],
+      special: false, specialEvery: 3,
+      parrySpeed: 470, telegraph: 690, scale: 2.3, yOff: 0,
+      flavor: '魔王に仕えし、堕ちた騎士。その剣は王城への門を阻む。',
+    },
+    {
+      id: 'demon', name: '魔王 アリア', tag: 'THE FALLEN COMRADE',
+      texture: 'enemy3', idleAnim: 'demon_idle', bg: 'stage3', bgm: 'bgm_finale', // phase 1: 終焉を奏でる者
+      waves: [{ hp: 640, atk: 31, specialAtk: 56 }],
+      special: true, specialEvery: 3,
+      // Phase 2 (HP <= 50%): BGM -> bgm_unleash + unparryable cast attacks.
+      phase2At: 0.5, castAtk: 66,
+      parrySpeed: 520, telegraph: 650, scale: 2.6, yOff: -6,
+      flavor: 'かつての仲間。裏切られ、復讐に堕ちた。',
+    },
+  ];
+
+  // ---- Companions (support from the back line) -----------------------
+  const COMPANIONS = {
+    shizu: { name: 'シズ', initial: 'シ', color: 0xffa54a, role: '銃使い / 追撃' },
+    noel:  { name: 'ノエル', initial: 'ノ', color: 0x4ad6c0, role: '支援 / 治癒' },
+  };
+
+  // ---- Player base stats --------------------------------------------
+  const PLAYER_BASE = { maxHp: 100, maxMp: 30, maxSp: 100 };
+
+  /* =====================================================================
+     BOOT / PRELOAD
+     ===================================================================== */
+  class BootScene extends Phaser.Scene {
+    constructor() { super('Boot'); }
+
+    preload() {
+      const fb = document.getElementById('loading-fallback');
+      if (fb) fb.remove();
+
+      // --- Loading bar UI ---
+      const bx = GAME_W / 2, by = GAME_H / 2;
+      this.add.text(bx, by - 70, 'RE:COLLAR', {
+        fontFamily: FONT, fontSize: '46px', color: C.white, fontStyle: 'bold',
+      }).setOrigin(0.5).setAlpha(0.9);
+      this.add.text(bx, by - 30, 'BATTLE DEMO', {
+        fontFamily: FONT, fontSize: '16px', color: C.gold,
+      }).setOrigin(0.5).setLetterSpacing ? null : null;
+      const sub = this.add.text(bx, by - 28, 'B A T T L E   D E M O', {
+        fontFamily: FONT, fontSize: '14px', color: C.gold,
+      }).setOrigin(0.5);
+
+      const barW = 360, barH = 14;
+      this.add.rectangle(bx, by + 20, barW + 4, barH + 4, 0x000000)
+        .setStrokeStyle(2, 0x3a3a55);
+      const fill = this.add.rectangle(bx - barW / 2, by + 20, 1, barH, C.goldN)
+        .setOrigin(0, 0.5);
+      const pct = this.add.text(bx, by + 50, '0%', {
+        fontFamily: FONT, fontSize: '13px', color: '#8a8aa8',
+      }).setOrigin(0.5);
+
+      this.load.on('progress', (v) => {
+        fill.width = Math.max(1, barW * v);
+        pct.setText(Math.round(v * 100) + '%');
+      });
+
+      // Self-heal transient asset drops (e.g. flaky connection): retry each file up to twice.
+      const retryCount = {};
+      this.load.on('loaderror', (file) => {
+        retryCount[file.key] = (retryCount[file.key] || 0) + 1;
+        if (retryCount[file.key] > 2) return;
+        const url = Array.isArray(file.url) ? file.url[0] : file.url;
+        if (file.type === 'audio') this.load.audio(file.key, url);
+        else if (file.type === 'image') this.load.image(file.key, url);
+      });
+
+      // --- Images ---
+      this.load.image('stage1', 'pic/stage1.png');
+      this.load.image('stage2', 'pic/stage2.png');
+      this.load.image('stage3', 'pic/stage3.png');
+      for (let i = 0; i <= 6; i++) {
+        this.load.image('main' + (i === 0 ? '' : i), 'pic/main' + (i === 0 ? '' : i) + '.png');
+      }
+      for (let i = 1; i <= 6; i++) this.load.image('enemy' + i, 'pic/enemy' + i + '.png');
+      this.load.image('slash', 'pic/battleE1.png');
+      this.load.image('shield', 'pic/defence.png');
+
+      // --- Audio (SFX) ---
+      const se = ['se_slash','se_fastslash','se_hit','se_clash','se_draw','se_guard',
+                  'se_thunder','se_holy','se_explosion','se_magiccircle','se_fly',
+                  'se_down','se_slowmo','se_fanfare','se_victory'];
+      se.forEach(k => this.load.audio(k, 'audio/' + k + '.mp3'));
+
+      // --- Audio (BGM) ---
+      // BGM is lazy-loaded per scene (keeps the initial boot small & reliable).
+    }
+
+    create() {
+      // Generate small particle textures.
+      const g = this.make.graphics({ x: 0, y: 0, add: false });
+      g.fillStyle(0xffffff, 1); g.fillCircle(8, 8, 8);
+      g.generateTexture('spark', 16, 16);
+      g.clear(); g.fillStyle(0xffffff, 1); g.fillRect(0, 0, 4, 4);
+      g.generateTexture('px', 4, 4);
+      g.clear();
+      // soft star for victory confetti
+      g.fillStyle(0xffffff, 1); g.fillRect(0, 0, 6, 6);
+      g.generateTexture('conf', 6, 6);
+      g.destroy();
+
+      // Player attack animation (main .. main6)
+      this.anims.create({
+        key: 'alicia_attack',
+        frames: [
+          { key: 'main' }, { key: 'main1' }, { key: 'main2' }, { key: 'main3' },
+          { key: 'main4' }, { key: 'main5' }, { key: 'main6' },
+        ],
+        frameRate: 16, repeat: 0,
+      });
+      // Demon idle (enemy3..6 loop)
+      this.anims.create({
+        key: 'demon_idle',
+        frames: [{ key: 'enemy3' }, { key: 'enemy4' }, { key: 'enemy5' }, { key: 'enemy6' }],
+        frameRate: 2, repeat: -1,
+      });
+
+      this.scene.start('Title');
+    }
+  }
+
+  /* =====================================================================
+     TITLE
+     ===================================================================== */
+  class TitleScene extends Phaser.Scene {
+    constructor() { super('Title'); }
+
+    create() {
+      // Dim dark-throne background.
+      const bg = this.add.image(GAME_W / 2, GAME_H / 2, 'stage3');
+      fitCover(bg, GAME_W, GAME_H);
+      bg.setTint(0x55557a);
+      this.add.rectangle(GAME_W / 2, GAME_H / 2, GAME_W, GAME_H, 0x05050f, 0.45);
+
+      // Faint duel silhouettes.
+      const alicia = this.add.image(250, GROUND_Y + 20, 'main').setOrigin(0.5, 1).setScale(2.4).setAlpha(0.85);
+      const demon = this.add.image(720, GROUND_Y + 20, 'enemy3').setOrigin(0.5, 1).setScale(2.7).setAlpha(0.85).setFlipX(false);
+      this.tweens.add({ targets: alicia, y: '-=8', duration: 1600, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+      this.tweens.add({ targets: demon, y: '-=12', duration: 2000, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+
+      // Title logo.
+      const t1 = this.add.text(GAME_W / 2, 150, 'RE:COLLAR', {
+        fontFamily: FONT, fontSize: '88px', color: C.white, fontStyle: 'bold',
+        stroke: '#1a1030', strokeThickness: 10,
+      }).setOrigin(0.5).setShadow(0, 6, '#000000', 12, true, true);
+      const grad = t1.context.createLinearGradient(0, 0, 0, t1.height);
+      grad.addColorStop(0, '#ffffff'); grad.addColorStop(0.5, '#ffe9a8'); grad.addColorStop(1, '#e0a23a');
+      t1.setFill(grad);
+
+      this.add.text(GAME_W / 2, 214, 'B A T T L E   D E M O', {
+        fontFamily: FONT, fontSize: '20px', color: C.gold, fontStyle: 'bold',
+      }).setOrigin(0.5);
+      this.add.text(GAME_W / 2, 250, 'タイミング・ターンバトル', {
+        fontFamily: FONT, fontSize: '14px', color: '#b9b9d6',
+      }).setOrigin(0.5);
+
+      // Press start (blinking).
+      const press = this.add.text(GAME_W / 2, 380, '▶  PRESS  ENTER  /  CLICK  TO  START', {
+        fontFamily: FONT, fontSize: '22px', color: C.white, fontStyle: 'bold',
+      }).setOrigin(0.5);
+      this.tweens.add({ targets: press, alpha: { from: 1, to: 0.25 }, duration: 700, yoyo: true, repeat: -1 });
+
+      // Controls hint.
+      this.add.text(GAME_W / 2, GAME_H - 56,
+        '◀ ▶ コマンド選択   /   SPACE・ENTER 決定&タイミング   /   M ミュート',
+        { fontFamily: FONT, fontSize: '13px', color: '#8a8aa8' }).setOrigin(0.5);
+      this.add.text(GAME_W / 2, GAME_H - 32,
+        'エリシア が 魔王アリア に挑む2連戦。攻守どちらもタイミングが命。ODゲージを溜めて必殺技を放て！',
+        { fontFamily: FONT, fontSize: '12px', color: '#6a6a88' }).setOrigin(0.5);
+
+      // Audio: attempt title BGM; resume context on first gesture.
+      this.input.once('pointerdown', () => this.sound.context.resume && this.sound.context.resume());
+      try { lazyBgm(this, 'bgm_title', 0.35); } catch (e) {}
+
+      const start = () => {
+        if (this._started) return; this._started = true;
+        this.sound.context.resume && this.sound.context.resume();
+        sfx(this, 'se_draw', 0.6);
+        this.cameras.main.fadeOut(450, 0, 0, 0);
+        this.cameras.main.once('camerafadeoutcomplete', () => {
+          this.scene.start('Battle', {
+            index: 0, hp: PLAYER_BASE.maxHp, mp: PLAYER_BASE.maxMp, sp: 0,
+            stats: { turns: 0, perfect: 0, maxCombo: 0 },
+          });
+        });
+      };
+      this.input.keyboard.on('keydown-ENTER', start);
+      this.input.keyboard.on('keydown-SPACE', start);
+      this.input.on('pointerdown', start);
+      this.input.keyboard.on('keydown-M', () => { this.sound.mute = !this.sound.mute; });
+    }
+  }
+
+  /* =====================================================================
+     BATTLE
+     ===================================================================== */
+  class BattleScene extends Phaser.Scene {
+    constructor() { super('Battle'); }
+
+    init(data) {
+      this.encIndex = data.index || 0;
+      this.enc = ENCOUNTERS[this.encIndex];
+      this.player = {
+        maxHp: PLAYER_BASE.maxHp, hp: data.hp,
+        maxMp: PLAYER_BASE.maxMp, mp: data.mp,
+        maxSp: PLAYER_BASE.maxSp, sp: data.sp || 0,
+      };
+      this.party = ['shizu', 'noel']; // active companions
+      this.waveIndex = 0;
+      const w = this.enc.waves[0];
+      this.enemy = { maxHp: w.hp, hp: w.hp };
+      this.stats = data.stats || { turns: 0, perfect: 0, maxCombo: 0 };
+      this.combo = 0;
+      this.guarding = false;
+      this.enemyTurnCount = 0;
+      this.phase = 1;       // boss phase (アリア goes to 2)
+      this.casting = false; // boss is mid-cast (phase 2 詠唱攻撃)
+      this.state = 'INIT';
+      this.timing = null;
+    }
+
+    curWave() { return this.enc.waves[this.waveIndex]; }
+    hasAlly(key) { return this.party.indexOf(key) !== -1; }
+
+    enemyDisplayName() {
+      const multi = this.enc.waves.length > 1;
+      return this.enc.name + (multi ? '  (' + (this.waveIndex + 1) + ' / ' + this.enc.waves.length + ')' : '');
+    }
+
+    // ---- Companions ------------------------------------------------
+    makeAlly(key, x, y) {
+      const c = COMPANIONS[key];
+      const cont = this.add.container(x, y).setDepth(8).setAlpha(0.95);
+      const ring = this.add.circle(0, 0, 23, c.color, 0.92).setStrokeStyle(3, 0x10101c);
+      const init = this.add.text(0, -1, c.initial, { fontFamily: FONT, fontSize: '22px', color: '#16121c', fontStyle: 'bold' }).setOrigin(0.5);
+      const nm = this.add.text(0, 30, c.name, { fontFamily: FONT, fontSize: '11px', color: '#e6e6f4', fontStyle: 'bold', stroke: C.ink, strokeThickness: 3 }).setOrigin(0.5);
+      cont.add([ring, init, nm]);
+      this.tweens.add({ targets: cont, y: y - 4, duration: 1600 + Math.random() * 500, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+      return { key, cont, ring, x, y };
+    }
+
+    allyAct(key, text) {
+      const a = this.allies.find(x => x.key === key);
+      if (!a) return;
+      this.tweens.add({ targets: a.cont, scaleX: { from: 1.3, to: 1 }, scaleY: { from: 1.3, to: 1 }, duration: 320, ease: 'Back.out' });
+      const t = this.add.text(a.x + 34, a.y - 26, COMPANIONS[key].name + '：' + text, {
+        fontFamily: FONT, fontSize: '13px', color: '#ffe6a0', fontStyle: 'bold', stroke: C.ink, strokeThickness: 4,
+      }).setOrigin(0, 0.5).setDepth(110);
+      this.tweens.add({ targets: t, x: '+=10', alpha: { from: 1, to: 0 }, delay: 500, duration: 500, onComplete: () => t.destroy() });
+    }
+
+    // シズ：パーフェクトコンボ後の追撃射撃
+    shizuFollowUp() {
+      const a = this.allies.find(x => x.key === 'shizu');
+      if (!a) { this.afterPlayerAction(); return; }
+      this.allyAct('shizu', '追撃射撃！');
+      sfx(this, 'se_hit', 0.45);
+      const bullet = this.add.rectangle(a.x + 22, a.y, 16, 4, 0xffe6a0).setDepth(24).setBlendMode(Phaser.BlendModes.ADD);
+      this.tweens.add({
+        targets: bullet, x: this.enemySprite.x, y: this.enemySprite.y - 60, duration: 220, ease: 'Quad.in',
+        onComplete: () => {
+          bullet.destroy();
+          sfx(this, 'se_explosion', 0.3);
+          this.spawnSpark(this.enemySprite.x, this.enemySprite.y - 60, 0xffe6a0, 14);
+          this.cameras.main.shake(140, 0.007);
+          this.dealToEnemy(28, 'GOOD');
+          this.time.delayedCall(520, () => this.afterPlayerAction());
+        },
+      });
+    }
+
+    create() {
+      const W = GAME_W, H = GAME_H;
+
+      // --- Background ---
+      const bg = this.add.image(W / 2, H / 2, this.enc.bg);
+      fitCover(bg, W, H); bg.setDepth(0);
+      this.add.rectangle(W / 2, H / 2, W, H, 0x05050f, 0.18).setDepth(0);
+      // ground shadow band
+      this.add.rectangle(W / 2, GROUND_Y + 8, W, 60, 0x000000, 0.28).setDepth(1);
+
+      // --- Characters ---
+      this.aliciaShadow = this.add.ellipse(250, GROUND_Y + 10, 110, 26, 0x000000, 0.35).setDepth(5);
+      this.alicia = this.add.sprite(250, GROUND_Y + 12, 'main')
+        .setOrigin(0.5, 1).setScale(2.4).setDepth(10);
+      // Return to the resting frame once an attack flourish finishes.
+      this.alicia.on('animationcomplete', () => { if (this.alicia.active) this.alicia.setTexture('main'); });
+      this.aliciaIdle = this.tweens.add({
+        targets: [this.alicia], y: GROUND_Y + 12 - 6, duration: 1500,
+        yoyo: true, repeat: -1, ease: 'Sine.inOut',
+      });
+
+      const ex = 710, ey = GROUND_Y + 12 + this.enc.yOff;
+      this.enemyShadow = this.add.ellipse(ex, GROUND_Y + 10, 120, 28, 0x000000, 0.35).setDepth(5);
+      this.enemySprite = this.add.sprite(ex, ey, this.enc.texture)
+        .setOrigin(0.5, 1).setScale(this.enc.scale).setDepth(10).setFlipX(false);
+      if (this.enc.idleAnim) this.enemySprite.play(this.enc.idleAnim);
+      this.enemyIdle = this.tweens.add({
+        targets: [this.enemySprite], y: ey - 8, duration: 1800,
+        yoyo: true, repeat: -1, ease: 'Sine.inOut',
+      });
+      this.enemyHome = { x: ex, y: ey };
+      this.aliciaHome = { x: 250, y: GROUND_Y + 12 };
+
+      // Waiting 2nd enemy (for multi-wave encounters like 過去の幻影×2): a faded figure behind.
+      if (this.enc.waves.length > 1) {
+        this.waitingSprite = this.add.sprite(ex + 120, ey - 10, this.enc.texture)
+          .setOrigin(0.5, 1).setScale(this.enc.scale * 0.9).setDepth(7)
+          .setAlpha(0.4).setTint(0x6a6a88).setFlipX(false);
+        this.tweens.add({ targets: this.waitingSprite, y: ey - 18, duration: 2100, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+      }
+
+      // --- Companions (back line, placeholder avatars — art TBD) ---
+      this.allies = [];
+      if (this.hasAlly('shizu')) this.allies.push(this.makeAlly('shizu', 150, 244));
+      if (this.hasAlly('noel')) this.allies.push(this.makeAlly('noel', 86, 286));
+
+      // --- Enemy UI (top) ---
+      this.enemyNameText = this.add.text(W / 2, 40, this.enemyDisplayName(), {
+        fontFamily: FONT, fontSize: '22px', color: C.white, fontStyle: 'bold',
+        stroke: C.ink, strokeThickness: 5,
+      }).setOrigin(0.5).setDepth(50);
+      this.add.text(W / 2, 64, this.enc.tag, {
+        fontFamily: FONT, fontSize: '11px', color: C.red, fontStyle: 'bold',
+      }).setOrigin(0.5).setDepth(50);
+      this.enemyBar = new Bar(this, W / 2 - 230, 84, 460, 16, this.enemy.maxHp, C.redN, true);
+      // encounter pips
+      const pipText = (this.encIndex + 1) + ' / ' + ENCOUNTERS.length;
+      this.add.text(W - 16, 20, 'BATTLE ' + pipText, {
+        fontFamily: FONT, fontSize: '12px', color: '#9a9ac0', fontStyle: 'bold',
+      }).setOrigin(1, 0).setDepth(50);
+
+      // --- Player UI (bottom-left) ---
+      const px = 24, py = 436;
+      this.add.rectangle(px - 12, py - 12, 292, 104, 0x0a0a18, 0.66)
+        .setOrigin(0, 0).setStrokeStyle(2, 0x33335a).setDepth(48);
+      this.add.text(px, py, 'エリシア', {
+        fontFamily: FONT, fontSize: '19px', color: C.white, fontStyle: 'bold',
+      }).setOrigin(0, 0).setDepth(50);
+      this.add.text(px + 92, py + 4, 'ELYSIA', {
+        fontFamily: FONT, fontSize: '10px', color: '#9a9ac0',
+      }).setOrigin(0, 0).setDepth(50);
+      // HP
+      this.add.text(px, py + 27, 'HP', { fontFamily: FONT, fontSize: '11px', color: C.green, fontStyle: 'bold' }).setDepth(50);
+      this.hpBar = new Bar(this, px + 28, py + 34, 196, 12, this.player.maxHp, C.greenN);
+      this.hpText = this.add.text(px + 250, py + 27, '', { fontFamily: FONT, fontSize: '11px', color: '#cfcfe6' }).setOrigin(1, 0).setDepth(50);
+      // MP
+      this.add.text(px, py + 46, 'MP', { fontFamily: FONT, fontSize: '11px', color: C.blue, fontStyle: 'bold' }).setDepth(50);
+      this.mpBar = new Bar(this, px + 28, py + 52, 196, 9, this.player.maxMp, C.blueN);
+      this.mpText = this.add.text(px + 250, py + 46, '', { fontFamily: FONT, fontSize: '11px', color: '#cfcfe6' }).setOrigin(1, 0).setDepth(50);
+      // OVERDRIVE / SP
+      this.add.text(px, py + 64, 'OD', { fontFamily: FONT, fontSize: '11px', color: '#c89bff', fontStyle: 'bold' }).setDepth(50);
+      this.spBar = new Bar(this, px + 28, py + 70, 196, 9, this.player.maxSp, 0xb366ff);
+      this.spReadyText = this.add.text(px + 250, py + 64, 'READY!', { fontFamily: FONT, fontSize: '11px', color: C.gold, fontStyle: 'bold' }).setOrigin(1, 0).setDepth(50).setVisible(false);
+      this.tweens.add({ targets: this.spReadyText, alpha: { from: 1, to: 0.3 }, duration: 450, yoyo: true, repeat: -1 });
+      this.refreshStatsUI(false);
+
+      // --- Combo counter ---
+      this.comboText = this.add.text(W / 2, 150, '', {
+        fontFamily: FONT, fontSize: '34px', color: C.gold, fontStyle: 'bold',
+        stroke: C.ink, strokeThickness: 6,
+      }).setOrigin(0.5).setDepth(60).setAlpha(0);
+
+      // --- Command menu ---
+      this.buildCommandMenu();
+
+      // --- Message banner ---
+      this.banner = this.add.text(W / 2, 250, '', {
+        fontFamily: FONT, fontSize: '30px', color: C.white, fontStyle: 'bold',
+        stroke: C.ink, strokeThickness: 6, align: 'center',
+      }).setOrigin(0.5).setDepth(120).setAlpha(0);
+
+      // --- Timing UI container (built lazily) ---
+      this.timingLayer = this.add.container(0, 0).setDepth(70);
+
+      // --- Full-screen flash + rage vignette ---
+      this.flashRect = this.add.rectangle(W / 2, H / 2, W, H, 0xffffff, 0)
+        .setDepth(180).setBlendMode(Phaser.BlendModes.ADD);
+      this.rageVignette = this.add.rectangle(W / 2, H / 2, W, H, 0xff2030, 0)
+        .setDepth(9).setBlendMode(Phaser.BlendModes.ADD);
+
+      // --- Input ---
+      this.input.keyboard.on('keydown-LEFT', () => this.moveCursor(-1));
+      this.input.keyboard.on('keydown-RIGHT', () => this.moveCursor(1));
+      this.input.keyboard.on('keydown-UP', () => this.moveCursor(-1));
+      this.input.keyboard.on('keydown-DOWN', () => this.moveCursor(1));
+      this.input.keyboard.on('keydown-SPACE', () => this.onActionKey());
+      this.input.keyboard.on('keydown-ENTER', () => this.onActionKey());
+      this.input.keyboard.on('keydown-M', () => { this.sound.mute = !this.sound.mute; });
+
+      // Music (all BGM lazy-loaded per scene)
+      lazyBgm(this, this.enc.bgm, this.enc.id === 'demon' ? 0.42 : 0.32);
+      if (this.enc.id === 'demon' && !this.cache.audio.exists('bgm_unleash')) {
+        this.load.audio('bgm_unleash', 'music/bgm_unleash.mp3'); // pre-fetch phase-2 theme
+        this.load.start();
+      }
+      this.cameras.main.fadeIn(450, 0, 0, 0);
+
+      // Boss rage state
+      this.raging = false;
+
+      // Intro
+      this.time.delayedCall(300, () => this.introBanner());
+    }
+
+    // ---- Intro VS banner -------------------------------------------
+    introBanner() {
+      this.state = 'BANNER';
+      sfx(this, 'se_slowmo', 0.5);
+      this.showBanner(this.enc.flavor + '\n' + this.enc.name, 1100, () => {
+        // Introduce the party once, at the start of the run.
+        if (this.encIndex === 0 && this.allies.length) {
+          this.allies.forEach(a => this.tweens.add({ targets: a.cont, scaleX: { from: 1.3, to: 1 }, scaleY: { from: 1.3, to: 1 }, duration: 350, ease: 'Back.out' }));
+          this.flashBanner('仲間 シズ・ノエル が 援護する！', '#ffe6a0');
+          this.time.delayedCall(700, () => this.startPlayerTurn());
+        } else {
+          this.startPlayerTurn();
+        }
+      });
+    }
+
+    // ---- Command menu ----------------------------------------------
+    buildCommandMenu() {
+      const cmds = [
+        { key: 'attack',  label: 'こうげき', sub: 'ATTACK', icon: '⚔' },
+        { key: 'skill',   label: 'スキル',   sub: 'SKILL', icon: '✦' },
+        { key: 'guard',   label: 'ぼうぎょ', sub: 'GUARD +MP', icon: '🛡' },
+        { key: 'special', label: 'ひっさつ', sub: 'OVERDRIVE', icon: '★' },
+      ];
+      // Skill sub-menu (skills lifted from the original "To The End").
+      const skills = [
+        { key: 'heavy', label: 'ヘヴィースラッシュ', sub: '−12MP 大ダメージ', icon: '⚔', mp: 12 },
+        { key: 'holy',  label: 'ホーリー・レイン',   sub: '−14MP HP回復', icon: '✚', mp: 14 },
+        { key: 'night', label: 'ロードオブナイト',   sub: '−12MP HP吸収', icon: '☾', mp: 12 },
+        { key: 'back',  label: 'もどる',           sub: 'CANCEL', icon: '◀', mp: 0 },
+      ];
+      this.cmdButtons = this.makeButtonRow(cmds, 'cmd');
+      this.skillButtons = this.makeButtonRow(skills, 'skill');
+      this.cmdIndex = 0;
+      this.skillIndex = 0;
+      this.setMenuVisible(false);
+      this.skillButtons.forEach(b => b.cont.setVisible(false));
+    }
+
+    makeButtonRow(defs, kind) {
+      const bw = 160, gap = 6, firstX = 300 + bw / 2, y = 508;
+      const arr = [];
+      defs.forEach((d, i) => {
+        const x = firstX + i * (bw + gap);
+        const cont = this.add.container(x, y).setDepth(55);
+        const box = this.add.rectangle(0, 0, bw, 54, 0x12121f, 0.92).setStrokeStyle(2, 0x44446a);
+        const ic = this.add.text(-bw / 2 + 18, 0, d.icon, { fontSize: '18px' }).setOrigin(0.5);
+        const lab = this.add.text(-bw / 2 + 34, -8, d.label, {
+          fontFamily: FONT, fontSize: kind === 'skill' ? '12px' : '16px', color: C.white, fontStyle: 'bold',
+        }).setOrigin(0, 0.5);
+        const sub = this.add.text(-bw / 2 + 34, 12, d.sub, {
+          fontFamily: FONT, fontSize: '9px', color: '#9a9ac0',
+        }).setOrigin(0, 0.5);
+        cont.add([box, ic, lab, sub]);
+        cont.setSize(bw, 54);
+        cont.setInteractive(new Phaser.Geom.Rectangle(-bw / 2, -27, bw, 54), Phaser.Geom.Rectangle.Contains);
+        cont.on('pointerover', () => {
+          if (kind === 'cmd' && this.state === 'COMMAND') { this.cmdIndex = i; this.refreshCmd(); }
+          else if (kind === 'skill' && this.state === 'SKILLMENU') { this.skillIndex = i; this.refreshSkill(); }
+        });
+        cont.on('pointerdown', () => {
+          if (kind === 'cmd' && this.state === 'COMMAND') { this.cmdIndex = i; this.refreshCmd(); this.confirmCommand(); }
+          else if (kind === 'skill' && this.state === 'SKILLMENU') { this.skillIndex = i; this.refreshSkill(); this.confirmSkill(); }
+        });
+        arr.push({ cont, box, lab, sub, def: d });
+      });
+      return arr;
+    }
+
+    setMenuVisible(v) {
+      this.cmdButtons.forEach(b => { b.cont.setVisible(v); });
+      if (v) this.refreshCmd();
+    }
+
+    setSkillMenuVisible(v) {
+      this.skillButtons.forEach(b => { b.cont.setVisible(v); });
+      if (v) this.refreshSkill();
+    }
+
+    refreshCmd() {
+      this.cmdButtons.forEach((b, i) => {
+        const on = i === this.cmdIndex;
+        const k = b.def.key;
+        let usable = true;
+        if (k === 'skill') usable = this.player.mp >= 12;
+        if (k === 'special') usable = this.player.sp >= this.player.maxSp;
+        const ready = k === 'special' && usable; // overdrive charged & glowing
+        b.box.setStrokeStyle(on ? 3 : 2, on ? C.goldN : (ready ? 0xb366ff : 0x44446a));
+        b.box.setFillStyle(on ? 0x2a2440 : (ready ? 0x241a3a : 0x12121f), on ? 0.97 : 0.9);
+        b.cont.setScale(on ? 1.06 : 1.0);
+        b.lab.setColor(!usable ? '#7a6a6a' : (on ? C.gold : (ready ? '#e0b3ff' : C.white)));
+        b.box.setAlpha(usable ? 1 : 0.55);
+      });
+    }
+
+    refreshSkill() {
+      this.skillButtons.forEach((b, i) => {
+        const on = i === this.skillIndex;
+        const usable = b.def.key === 'back' || this.player.mp >= (b.def.mp || 0);
+        b.box.setStrokeStyle(on ? 3 : 2, on ? C.goldN : 0x44446a);
+        b.box.setFillStyle(on ? 0x2a2440 : 0x12121f, on ? 0.97 : 0.9);
+        b.cont.setScale(on ? 1.06 : 1.0);
+        b.lab.setColor(!usable ? '#7a6a6a' : (on ? C.gold : C.white));
+        b.box.setAlpha(usable ? 1 : 0.55);
+      });
+    }
+
+    moveCursor(dir) {
+      if (this.state === 'COMMAND') {
+        this.cmdIndex = (this.cmdIndex + dir + this.cmdButtons.length) % this.cmdButtons.length;
+        sfx(this, 'se_draw', 0.25);
+        this.refreshCmd();
+      } else if (this.state === 'SKILLMENU') {
+        this.skillIndex = (this.skillIndex + dir + this.skillButtons.length) % this.skillButtons.length;
+        sfx(this, 'se_draw', 0.25);
+        this.refreshSkill();
+      }
+    }
+
+    onActionKey() {
+      if (this.state === 'COMMAND') this.confirmCommand();
+      else if (this.state === 'SKILLMENU') this.confirmSkill();
+      else if (this.state === 'TIMING') this.pressTiming(false);
+    }
+
+    // ---- Player turn ------------------------------------------------
+    startPlayerTurn() {
+      this.stats.turns++;
+      this.guarding = false;
+      // ノエル passive (再生の祈り): 各ターン開始時に HP を少し回復
+      if (this.hasAlly('noel') && this.stats.turns > 1 && this.player.hp > 0 && this.player.hp < this.player.maxHp) {
+        const h = Math.min(6, this.player.maxHp - this.player.hp);
+        this.player.hp += h;
+        this.refreshStatsUI();
+        this.allyAct('noel', '再生の祈り');
+        this.popText(this.alicia.x + 18, this.alicia.y - 150, '+' + h, C.green, 18);
+      }
+      this.state = 'COMMAND';
+      this.setSkillMenuVisible(false);
+      this.setMenuVisible(true);
+      this.showHint('コマンドを選択');
+    }
+
+    confirmCommand() {
+      const def = this.cmdButtons[this.cmdIndex].def;
+      if (def.key === 'skill' && this.player.mp < 12) {
+        sfx(this, 'se_hit', 0.2);
+        this.flashBanner('MPが たりない！', C.red);
+        return;
+      }
+      if (def.key === 'special' && this.player.sp < this.player.maxSp) {
+        sfx(this, 'se_hit', 0.2);
+        this.flashBanner('オーバードライブ 未充填！', C.red);
+        return;
+      }
+      if (def.key === 'skill') { sfx(this, 'se_draw', 0.4); this.openSkillMenu(); return; }
+      this.setMenuVisible(false);
+      this.clearHint();
+      sfx(this, 'se_draw', 0.5);
+      if (def.key === 'attack') this.doAttackCombo();
+      else if (def.key === 'special') this.doSpecial();
+      else this.doGuard();
+    }
+
+    // ---- Skill sub-menu --------------------------------------------
+    openSkillMenu() {
+      this.state = 'SKILLMENU';
+      this.setMenuVisible(false);
+      this.skillIndex = 0;
+      this.setSkillMenuVisible(true);
+      this.showHint('スキルを選択（「もどる」で戻る）');
+    }
+
+    closeSkillMenu() {
+      this.state = 'COMMAND';
+      this.setSkillMenuVisible(false);
+      this.setMenuVisible(true);
+      this.showHint('コマンドを選択');
+    }
+
+    confirmSkill() {
+      const def = this.skillButtons[this.skillIndex].def;
+      if (def.key === 'back') { sfx(this, 'se_draw', 0.3); this.closeSkillMenu(); return; }
+      if (this.player.mp < def.mp) {
+        sfx(this, 'se_hit', 0.2);
+        this.flashBanner('MPが たりない！', C.red);
+        return;
+      }
+      this.setSkillMenuVisible(false);
+      this.clearHint();
+      sfx(this, 'se_draw', 0.5);
+      this.doSkill(def.key, def.mp);
+    }
+
+    // Heal helper (used by skills).
+    healPlayer(h) {
+      if (h <= 0) return;
+      this.player.hp = Math.min(this.player.maxHp, this.player.hp + h);
+      this.refreshStatsUI();
+      this.popText(this.alicia.x + 20, this.alicia.y - 150, '+' + h + ' HP', C.green, 22);
+    }
+
+    // ---- SKILL execution (timing magic with per-skill effects) -----
+    doSkill(key, mpCost) {
+      const SKILLS = {
+        heavy: { name: 'ヘヴィースラッシュ', vfx: 'slash', se: 'se_slash',   dmg: { PERFECT: 78, GOOD: 46, MISS: 18 }, flash: 0xfff2b0 },
+        holy:  { name: 'ホーリー・レイン',   vfx: 'holy',  se: 'se_holy',    dmg: { PERFECT: 54, GOOD: 32, MISS: 12 }, flash: 0xfff2c0, heal: 0.22 },
+        night: { name: 'ロード・オブ・ナイト', vfx: 'dark',  se: 'se_thunder', dmg: { PERFECT: 60, GOOD: 36, MISS: 14 }, flash: 0xbb66ff, lifesteal: 0.30 },
+      };
+      const s = SKILLS[key];
+      this.player.mp -= mpCost;
+      this.refreshStatsUI();
+      this.startTiming({
+        label: s.name, speed: 380, perfectHalf: 0.045, goodHalf: 0.15, timeout: 2400, mode: 'magic',
+      }, (res) => {
+        this.registerJudge(res);
+        sfx(this, 'se_magiccircle', 0.45);
+        this.aliciaIdle.pause();
+        this.alicia.play('alicia_attack');
+        this.time.delayedCall(260, () => {
+          const dmg = s.dmg[res];
+          sfx(this, s.se, 0.6);
+          if (s.vfx === 'holy') this.holyPillar();
+          else if (s.vfx === 'dark') { this.thunderStrike(res); this.spawnSpark(this.enemySprite.x, this.enemySprite.y - 60, 0xbb66ff, 16); }
+          else this.spawnSlash(this.enemySprite.x, this.enemySprite.y - 60, res, 3, 2.3);
+          this.dealToEnemy(dmg, res, res === 'PERFECT');
+          this.flash(s.flash, res === 'MISS' ? 0.3 : 0.85, 200);
+          this.cameras.main.shake(res === 'PERFECT' ? 300 : 160, res === 'PERFECT' ? 0.013 : 0.006);
+          if (res === 'PERFECT') this.hitstop(75);
+          if (s.heal) this.healPlayer(Math.round(this.player.maxHp * s.heal));
+          if (s.lifesteal && res !== 'MISS') this.healPlayer(Math.round(dmg * s.lifesteal));
+          this.aliciaIdle.resume();
+          this.time.delayedCall(440, () => this.afterPlayerAction());
+        });
+      });
+    }
+
+    // ---- ATTACK: 3-hit timing combo --------------------------------
+    doAttackCombo() {
+      this.attackResults = [];
+      this.runComboHit(0);
+    }
+
+    runComboHit(i) {
+      if (i >= 3) { this.resolveCombo(); return; }
+      const speed = 300 + i * 70; // each hit a touch faster
+      this.startTiming({
+        label: '斬撃  ' + (i + 1) + ' / 3',
+        speed, perfectHalf: 0.05, goodHalf: 0.18, timeout: 2000, mode: 'attack',
+      }, (res) => {
+        this.attackResults.push(res);
+        this.singleSlash(i, res);
+        const last = i === 2;
+        this.time.delayedCall(last ? 150 : 130, () => this.runComboHit(i + 1));
+      });
+    }
+
+    singleSlash(i, res) {
+      // Lunge Alicia toward the enemy + play attack frames.
+      this.aliciaIdle.pause();
+      this.alicia.play('alicia_attack');
+      const lungeX = this.aliciaHome.x + 120 + i * 24;
+      this.tweens.add({
+        targets: this.alicia, x: lungeX, duration: 90, yoyo: true, ease: 'Quad.out',
+        onComplete: () => { this.alicia.x = this.aliciaHome.x; },
+      });
+      sfx(this, res === 'MISS' ? 'se_hit' : (i === 2 ? 'se_slash' : 'se_fastslash'), 0.5);
+
+      const dmgMap = { PERFECT: 20, GOOD: 11, MISS: 3 };
+      let dmg = dmgMap[res];
+      this.registerJudge(res);
+      // slash VFX on enemy
+      this.spawnSlash(this.enemySprite.x, this.enemySprite.y - 60, res, i);
+      this.time.delayedCall(70, () => {
+        this.dealToEnemy(dmg, res);
+        if (res === 'PERFECT') { this.hitstop(60); this.cameras.main.shake(120, 0.006); }
+      });
+    }
+
+    resolveCombo() {
+      this.aliciaIdle.resume();
+      const allPerfect = this.attackResults.every(r => r === 'PERFECT');
+      if (allPerfect) {
+        // Finisher!
+        this.time.delayedCall(120, () => {
+          this.showBanner('P E R F E C T   C O M B O !', 700, null);
+          sfx(this, 'se_explosion', 0.5);
+          this.flash(0xfff2b0, 0.7, 220);
+          this.cameras.main.shake(260, 0.012);
+          this.spawnSlash(this.enemySprite.x, this.enemySprite.y - 60, 'PERFECT', 4, 3.2);
+          this.dealToEnemy(28, 'PERFECT', true);
+          // シズ：パーフェクトコンボに反応して追撃 (60%)
+          if (this.hasAlly('shizu') && this.enemy.hp > 0 && Math.random() < 0.6) {
+            this.time.delayedCall(380, () => this.shizuFollowUp());
+          } else {
+            this.time.delayedCall(420, () => this.afterPlayerAction());
+          }
+        });
+      } else {
+        this.time.delayedCall(160, () => this.afterPlayerAction());
+      }
+    }
+
+    // ---- GUARD ------------------------------------------------------
+    doGuard() {
+      this.guarding = true;
+      this.player.mp = Math.min(this.player.maxMp, this.player.mp + 10);
+      this.refreshStatsUI();
+      sfx(this, 'se_guard', 0.6);
+      const sh = this.add.image(this.alicia.x, this.alicia.y - 60, 'shield')
+        .setScale(0.1).setDepth(40).setAlpha(0);
+      this.tweens.add({ targets: sh, scale: 1.6, alpha: 1, duration: 200, ease: 'Back.out' });
+      this.tweens.add({ targets: sh, alpha: 0, duration: 300, delay: 600, onComplete: () => sh.destroy() });
+      this.popText(this.alicia.x, this.alicia.y - 130, '+10 MP', C.blue, 20);
+      this.flashBanner('防御の構え！', C.green);
+      this.time.delayedCall(700, () => this.afterPlayerAction());
+    }
+
+    // ---- OVERDRIVE: cinematic ultimate (no timing — earned payoff) --
+    doSpecial() {
+      this.player.sp = 0;
+      this.refreshStatsUI();
+      this.state = 'OVER'; // lock input during the cinematic
+      sfx(this, 'se_slowmo', 0.6);
+      this.showBanner('★  O V E R D R I V E  ★\n光刃 ・ 終焉斬', 1100, null);
+
+      // Charge-up: Alicia glows and rises.
+      this.aliciaIdle.pause();
+      this.alicia.setTint(0xfff2b0);
+      this.tweens.add({
+        targets: this.alicia, y: this.aliciaHome.y - 26, scaleX: 2.75, scaleY: 2.75,
+        duration: 560, yoyo: true, ease: 'Sine.inOut',
+      });
+      this.spawnSpark(this.alicia.x, this.alicia.y - 60, C.goldN, 26);
+      this.time.delayedCall(620, () => {
+        sfx(this, 'se_magiccircle', 0.6);
+        this.flash(0xffffff, 0.45, 200);
+        this.spawnSpark(this.alicia.x, this.alicia.y - 60, 0xffffff, 22);
+      });
+
+      // The strike.
+      this.time.delayedCall(1080, () => {
+        sfx(this, 'se_holy', 0.75);
+        sfx(this, 'se_explosion', 0.55);
+        this.alicia.play('alicia_attack');
+        this.tweens.add({ targets: this.alicia, x: this.enemySprite.x - 140, duration: 130, yoyo: true, ease: 'Quad.out',
+          onComplete: () => { this.alicia.x = this.aliciaHome.x; } });
+        for (let k = 0; k < 6; k++) {
+          this.time.delayedCall(k * 60, () => {
+            this.spawnSlash(this.enemySprite.x + Phaser.Math.Between(-44, 44),
+              this.enemySprite.y - 60 + Phaser.Math.Between(-36, 24), 'PERFECT', k, 2.3);
+          });
+        }
+        this.holyPillar();
+        this.flash(0xfff2c0, 0.95, 420);
+        this.cameras.main.shake(520, 0.02);
+        this.hitstop(120);
+        this.dealToEnemy(150, 'PERFECT', true);
+      });
+
+      this.time.delayedCall(1760, () => {
+        this.alicia.clearTint();
+        this.alicia.setScale(2.4);
+        this.alicia.y = this.aliciaHome.y;
+        this.aliciaIdle.resume();
+        this.afterPlayerAction();
+      });
+    }
+
+    holyPillar() {
+      const x = this.enemySprite.x, baseY = this.enemySprite.y - 40;
+      const p = this.add.rectangle(x, baseY - 80, 76, 320, 0xfff2c0, 0.85)
+        .setDepth(22).setBlendMode(Phaser.BlendModes.ADD);
+      this.tweens.add({ targets: p, scaleX: 1.7, alpha: 0, duration: 520, ease: 'Quad.out', onComplete: () => p.destroy() });
+      const ring = this.add.image(x, baseY, 'slash').setDepth(21).setScale(0.4)
+        .setTint(0xfff2c0).setBlendMode(Phaser.BlendModes.ADD);
+      this.tweens.add({ targets: ring, scale: 4, alpha: 0, duration: 460, onComplete: () => ring.destroy() });
+      this.spawnSpark(x, baseY, 0xfff2c0, 30);
+      this.spawnSpark(x, baseY, 0xffffff, 18);
+    }
+
+    afterPlayerAction() {
+      if (this.enemy.hp <= 0) { this.onEnemyDefeated(); return; }
+      this.enemyTurn();
+    }
+
+    // ---- Enemy turn: telegraph -> parry timing ---------------------
+    enemyTurn() {
+      this.state = 'ENEMY';
+      this.enemyTurnCount++;
+
+      // Phase 2: a cast charged last turn now releases (unparryable — guard to soften).
+      if (this.casting) { this.castRelease(); return; }
+
+      // Boss (アリア) occasionally mends herself instead of attacking — [ダークヒール].
+      if (this.enc.special && this.enemy.hp < this.enemy.maxHp * 0.55 &&
+          this.enemy.hp > 0 && Math.random() < 0.2) {
+        this.bossHeal();
+        return;
+      }
+
+      // Phase 2: begin a cast (次ターンに詠唱攻撃).
+      if (this.phase === 2 && this.enc.castAtk && Math.random() < 0.45) {
+        this.castBegin();
+        return;
+      }
+
+      const isSpecial = this.enc.specialEvery > 0 &&
+        (this.enemyTurnCount % this.enc.specialEvery === 0 || (this.raging && this.enemyTurnCount % 2 === 0));
+
+      // Telegraph
+      sfx(this, isSpecial ? 'se_fly' : 'se_draw', 0.5);
+      this.enemyIdle.pause();
+      const tele = this.enc.telegraph;
+      // windup: pull back + glow
+      this.tweens.add({
+        targets: this.enemySprite, x: this.enemyHome.x + 30, duration: tele * 0.6,
+        ease: 'Quad.out', yoyo: false,
+      });
+      this.enemySprite.setTint(isSpecial ? 0xff7070 : 0xffd0d0);
+      if (isSpecial) {
+        sfx(this, 'se_magiccircle', 0.5);
+        const moveName = this.enc.special ? ' の[ダークスラッシュ]！' : ' の渾身の一撃！';
+        this.flashBanner('⚠  ' + this.enc.name + moveName, C.red);
+      } else {
+        this.showHint('タイミングよく ガード！');
+      }
+
+      this.time.delayedCall(tele, () => {
+        this.restoreEnemyTint();
+        this.startParry(isSpecial);
+      });
+    }
+
+    // Boss self-heal — a momentum-swing the player must race against.
+    bossHeal() {
+      sfx(this, 'se_magiccircle', 0.5);
+      const heal = Math.round(this.enemy.maxHp * 0.11);
+      this.enemy.hp = Math.min(this.enemy.maxHp, this.enemy.hp + heal);
+      this.enemyBar.set(this.enemy.hp);
+      this.flashBanner(this.enc.name + ' の [ダークヒール]！', '#c89bff');
+      this.popText(this.enemySprite.x, this.enemySprite.y - 90, '+' + heal, '#54e08a', 32);
+      this.spawnSpark(this.enemySprite.x, this.enemySprite.y - 55, 0xb366ff, 20);
+      const aura = this.add.image(this.enemySprite.x, this.enemySprite.y - 50, 'shield')
+        .setScale(0.2).setAlpha(0.8).setTint(0xb366ff).setDepth(22).setBlendMode(Phaser.BlendModes.ADD);
+      this.tweens.add({ targets: aura, scale: 2.4, alpha: 0, duration: 600, onComplete: () => aura.destroy() });
+      this.time.delayedCall(950, () => {
+        this.guarding = false;
+        this.maybeEnterRage();
+        this.startPlayerTurn();
+      });
+    }
+
+    // ---- Phase 2: 詠唱攻撃 (cast attack) ----------------------------
+    // Charge this turn (no damage); the player should GUARD next turn.
+    castBegin() {
+      this.casting = true;
+      this.enemyIdle.pause();
+      sfx(this, 'se_magiccircle', 0.6);
+      sfx(this, 'se_fly', 0.4);
+      this.enemySprite.setTint(0xc060ff);
+      const ring = this.add.image(this.enemySprite.x, this.enemySprite.y - 70, 'slash')
+        .setScale(0.5).setTint(0xc060ff).setAlpha(0.9).setDepth(22).setBlendMode(Phaser.BlendModes.ADD);
+      this.tweens.add({ targets: ring, angle: 200, scale: 2.3, alpha: 0.25, duration: 1100, ease: 'Quad.in', onComplete: () => ring.destroy() });
+      this.spawnSpark(this.enemySprite.x, this.enemySprite.y - 60, 0xc060ff, 16);
+      this.flashBanner('⚠ ' + this.enc.name + ' が詠唱を始めた！\n次ターン 詠唱攻撃 ―「ぼうぎょ」で備えよ！', C.red);
+      this.time.delayedCall(1300, () => {
+        this.restoreEnemyTint();
+        this.startPlayerTurn();
+      });
+    }
+
+    // Release the charged cast: UNPARRYABLE. Guarding (ぼうぎょ last turn) softens it.
+    castRelease() {
+      this.casting = false;
+      this.enemyIdle.pause();
+      this.enemySprite.setTint(0xc060ff);
+      this.flashBanner(this.enc.name + ' の 詠唱攻撃！', C.red);
+      this.tweens.add({ targets: this.enemySprite, x: this.aliciaHome.x + 170, duration: 200, yoyo: true, ease: 'Quad.in',
+        onComplete: () => { this.enemySprite.x = this.enemyHome.x; this.enemyIdle.resume(); } });
+      this.time.delayedCall(440, () => {
+        sfx(this, 'se_explosion', 0.6);
+        sfx(this, 'se_thunder', 0.5);
+        let dmg = Math.round(this.enc.castAtk * (this.raging ? 1.05 : 1));
+        let label, lcolor;
+        if (this.guarding) { dmg = Math.round(dmg * 0.4); label = '詠唱攻撃を防御！'; lcolor = C.green; sfx(this, 'se_guard', 0.6); }
+        else { label = '詠唱攻撃 直撃！'; lcolor = C.red; }
+        const pillar = this.add.rectangle(this.alicia.x, this.alicia.y - 80, 84, 340, 0xc060ff, 0.85)
+          .setDepth(22).setBlendMode(Phaser.BlendModes.ADD);
+        this.tweens.add({ targets: pillar, scaleX: 1.7, alpha: 0, duration: 440, onComplete: () => pillar.destroy() });
+        this.spawnSpark(this.alicia.x, this.alicia.y - 70, 0xc060ff, 28);
+        this.cameras.main.shake(460, 0.02);
+        this.flash(0xff3060, 0.7, 320);
+        this.restoreEnemyTint();
+        this.time.delayedCall(150, () => {
+          this.dealToPlayer(dmg, label, lcolor);
+          if (this.player.hp <= 0) { this.time.delayedCall(700, () => this.onPlayerDefeated()); return; }
+          this.time.delayedCall(680, () => { this.guarding = false; this.startPlayerTurn(); });
+        });
+      });
+    }
+
+    startParry(isSpecial) {
+      const w = this.curWave();
+      const baseAtk = isSpecial ? (w.specialAtk || w.atk * 1.7) : w.atk;
+      const rageBonus = this.raging ? 1.25 : 1; // phase 2 hits harder
+      const incoming = Math.round(baseAtk * rageBonus);
+      const wider = this.guarding ? 0.06 : 0;
+      this.startTiming({
+        label: isSpecial ? 'パリィ！ (強敵の一撃)' : 'ガード タイミング',
+        speed: this.enc.parrySpeed * (isSpecial ? 1.12 : 1) * (this.raging ? 1.1 : 1),
+        perfectHalf: 0.055 + wider, goodHalf: 0.18 + wider,
+        timeout: 1900, mode: 'parry',
+      }, (res) => {
+        this.resolveEnemyHit(res, incoming);
+      });
+    }
+
+    resolveEnemyHit(res, incoming) {
+      // Enemy lunge to player
+      this.tweens.add({
+        targets: this.enemySprite, x: this.aliciaHome.x + 150, duration: 130,
+        yoyo: true, ease: 'Quad.in',
+        onComplete: () => {
+          this.enemySprite.x = this.enemyHome.x;
+          this.enemyIdle.resume();
+        },
+      });
+
+      let dmg = incoming;
+      if (this.guarding) dmg = Math.round(dmg * 0.5);
+
+      let label, lcolor;
+      if (res === 'PERFECT') {
+        dmg = Math.round(dmg * 0.1);
+        label = 'パリィ成功！'; lcolor = C.gold;
+        this.player.mp = Math.min(this.player.maxMp, this.player.mp + 6);
+        this.registerJudge('PERFECT');
+        sfx(this, 'se_clash', 0.6);
+        this.spawnSpark(this.alicia.x, this.alicia.y - 70, C.goldN, 22);
+        this.flash(0xffffff, 0.4, 120);
+      } else if (res === 'GOOD') {
+        dmg = Math.round(dmg * 0.5);
+        label = 'ガード'; lcolor = C.green;
+        this.combo = 0; this.updateCombo();
+        sfx(this, 'se_guard', 0.5);
+        this.spawnSpark(this.alicia.x, this.alicia.y - 70, C.greenN, 12);
+      } else {
+        label = '直撃！'; lcolor = C.red;
+        this.combo = 0; this.updateCombo();
+        sfx(this, 'se_hit', 0.6);
+        this.cameras.main.shake(260, 0.011);
+        this.flash(0xff3040, 0.5, 180);
+      }
+
+      // ノエル (守護): 被弾時に確率(30%)でダメージを軽減
+      if (dmg > 0 && res !== 'PERFECT' && this.hasAlly('noel') && Math.random() < 0.3) {
+        dmg = Math.max(1, Math.round(dmg * 0.55));
+        this.allyAct('noel', '守護！');
+        this.spawnSpark(this.alicia.x, this.alicia.y - 70, COMPANIONS.noel.color, 14);
+      }
+
+      this.time.delayedCall(120, () => {
+        this.dealToPlayer(dmg, label, lcolor);
+        if (this.player.hp <= 0) { this.time.delayedCall(700, () => this.onPlayerDefeated()); return; }
+        this.time.delayedCall(650, () => {
+          this.guarding = false;
+          this.maybeEnterRage();
+          this.startPlayerTurn();
+        });
+      });
+    }
+
+    // ---- Damage application ----------------------------------------
+    dealToEnemy(dmg, res, big) {
+      // シズ passive (狙撃支援): PERFECT判定のダメージ +20%
+      if (res === 'PERFECT' && this.hasAlly('shizu')) dmg = Math.round(dmg * 1.2);
+      this.enemy.hp = Math.max(0, this.enemy.hp - dmg);
+      this.enemyBar.set(this.enemy.hp);
+      const col = res === 'PERFECT' ? C.gold : (res === 'GOOD' ? C.white : '#bdbdd0');
+      const size = res === 'PERFECT' ? (big ? 52 : 40) : (res === 'MISS' ? 24 : 32);
+      const tag = res === 'MISS' ? 'MISS ' : '';
+      this.popText(this.enemySprite.x + Phaser.Math.Between(-20, 20), this.enemySprite.y - 90, tag + dmg, col, size);
+      // flinch
+      this.enemySprite.setTint(0xff8888);
+      this.time.delayedCall(90, () => this.restoreEnemyTint());
+      this.tweens.add({ targets: this.enemySprite, x: this.enemyHome.x + 14, duration: 50, yoyo: true });
+      if (res !== 'MISS') sfx(this, 'se_hit', 0.3);
+      this.maybeEnterRage();
+    }
+
+    dealToPlayer(dmg, label, lcolor) {
+      this.player.hp = Math.max(0, this.player.hp - dmg);
+      this.refreshStatsUI();
+      this.flashBanner(label, lcolor);
+      this.popText(this.alicia.x + Phaser.Math.Between(-16, 16), this.alicia.y - 120,
+        dmg > 0 ? '-' + dmg : '0', lcolor, dmg > 0 ? 32 : 22);
+      if (dmg > 0) {
+        this.alicia.setTint(0xff8080);
+        this.time.delayedCall(100, () => { if (this.alicia.active) this.alicia.clearTint(); });
+      }
+    }
+
+    // ---- Boss rage --------------------------------------------------
+    // アリア PHASE 2 — triggered at half HP. BGM changes; unparryable cast attacks unlock.
+    maybeEnterRage() {
+      if (this.raging || !this.enc.special) return;
+      const at = this.enc.phase2At || 0.35;
+      if (this.enemy.hp > 0 && this.enemy.hp <= this.enemy.maxHp * at) {
+        this.raging = true;
+        this.phase = 2;
+        this.showBanner(this.enc.name + '\n第 二 形 態', 1200, null);
+        this.flashBanner('真の力を解放する ―― 詠唱攻撃に備えよ！', C.red);
+        sfx(this, 'se_explosion', 0.55);
+        sfx(this, 'se_slowmo', 0.5);
+        this.cameras.main.shake(500, 0.018);
+        this.flash(0xff3060, 0.6, 320);
+        this.enemySprite.setTint(0xff5555);
+        this.tweens.add({ targets: this.rageVignette, alpha: { from: 0, to: 0.26 }, duration: 700, yoyo: true, repeat: -1 });
+        // Swap to the phase-2 theme (pre-fetched in create; never blocks).
+        lazyBgm(this, 'bgm_unleash', 0.44);
+      }
+    }
+
+    restoreEnemyTint() {
+      if (!this.enemySprite.active) return;
+      if (this.raging) this.enemySprite.setTint(0xff5555);
+      else this.enemySprite.clearTint();
+    }
+
+    // ---- Next wave (same stage, e.g. 過去の幻影 2体目) --------------
+    nextWave() {
+      this.state = 'OVER';
+      this.setMenuVisible(false);
+      this.setSkillMenuVisible(false);
+      sfx(this, 'se_down', 0.5);
+      this.tweens.add({ targets: this.enemySprite, alpha: 0, y: '+=24', angle: 10, duration: 600, ease: 'Quad.in' });
+      this.spawnSpark(this.enemySprite.x, this.enemySprite.y - 50, 0xffffff, 18);
+      this.time.delayedCall(780, () => {
+        this.waveIndex++;
+        const w = this.curWave();
+        this.enemy = { maxHp: w.hp, hp: w.hp };
+        if (this.waitingSprite) { this.waitingSprite.destroy(); this.waitingSprite = null; }
+        this.enemySprite.setAlpha(1).setAngle(0).clearTint();
+        this.enemySprite.x = this.enemyHome.x;
+        this.enemySprite.y = this.enemyHome.y;
+        this.enemyShadow.setAlpha(0.35);
+        this.enemyBar.max = w.hp;
+        this.enemyBar.set(w.hp, false);
+        this.enemyNameText.setText(this.enemyDisplayName());
+        this.enemyTurnCount = 0;
+        sfx(this, 'se_slowmo', 0.4);
+        this.flashBanner((this.waveIndex + 1) + ' 体目 ・ ' + this.enc.name + ' 出現！', C.red);
+        this.time.delayedCall(820, () => this.startPlayerTurn());
+      });
+    }
+
+    // ---- Win / Lose -------------------------------------------------
+    onEnemyDefeated() {
+      // More waves in this stage? Bring up the next foe instead of ending.
+      if (this.waveIndex < this.enc.waves.length - 1) { this.nextWave(); return; }
+      this.state = 'OVER';
+      this.setMenuVisible(false);
+      sfx(this, 'se_down', 0.6);
+      if (this.raging) this.tweens.killTweensOf(this.rageVignette), this.rageVignette.setAlpha(0);
+      // enemy death
+      this.tweens.add({
+        targets: this.enemySprite, alpha: 0, y: '+=30', angle: 12, duration: 900, ease: 'Quad.in',
+      });
+      this.tweens.add({ targets: this.enemyShadow, alpha: 0, duration: 900 });
+      this.spawnSpark(this.enemySprite.x, this.enemySprite.y - 50, 0xffffff, 26);
+      this.flash(0xffffff, 0.6, 300);
+
+      const isLast = this.encIndex >= ENCOUNTERS.length - 1;
+      this.time.delayedCall(1100, () => {
+        if (isLast) {
+          this.scene.start('Result', { win: true, stats: this.stats });
+        } else {
+          // heal a bit and advance
+          const healHp = Math.round(this.player.maxHp * 0.35);
+          this.player.hp = Math.min(this.player.maxHp, this.player.hp + healHp);
+          this.player.mp = Math.min(this.player.maxMp, this.player.mp + 10);
+          this.refreshStatsUI();
+          this.showBanner(this.enc.name + ' を 撃破！\nHP回復  +' + healHp, 1400, () => {
+            this.cameras.main.fadeOut(400, 0, 0, 0);
+            this.cameras.main.once('camerafadeoutcomplete', () => {
+              this.scene.start('Battle', {
+                index: this.encIndex + 1, hp: this.player.hp, mp: this.player.mp,
+                sp: this.player.sp, stats: this.stats,
+              });
+            });
+          });
+        }
+      });
+    }
+
+    onPlayerDefeated() {
+      this.state = 'OVER';
+      this.setMenuVisible(false);
+      sfx(this, 'se_down', 0.7);
+      this.alicia.setTint(0x555566);
+      this.tweens.add({ targets: this.alicia, angle: -85, y: '+=20', alpha: 0.7, duration: 700, ease: 'Quad.in' });
+      this.cameras.main.shake(300, 0.01);
+      this.time.delayedCall(1200, () => {
+        this.scene.start('Result', { win: false, stats: this.stats });
+      });
+    }
+
+    /* ----------------------------------------------------------------
+       TIMING MINIGAME (shared by attack / magic / parry)
+       ---------------------------------------------------------------- */
+    startTiming(opts, cb) {
+      this.state = 'TIMING';
+      this.timingLayer.removeAll(true);
+
+      const cx = GAME_W / 2, cy = 300;
+      const W = 360, H = 30;
+      const left = cx - W / 2;
+
+      // Panel
+      this.timingLayer.add(this.add.rectangle(cx, cy, W + 50, H + 70, 0x0a0a16, 0.78)
+        .setStrokeStyle(2, 0x44446a));
+      this.timingLayer.add(this.add.text(cx, cy - 40, opts.label, {
+        fontFamily: FONT, fontSize: '16px', color: C.white, fontStyle: 'bold',
+      }).setOrigin(0.5));
+
+      // Bar background
+      this.timingLayer.add(this.add.rectangle(cx, cy, W, H, 0x1a1a2c).setStrokeStyle(2, 0x000000));
+      // Good zone
+      const goodW = W * opts.goodHalf * 2;
+      const goodColor = opts.mode === 'parry' ? 0x4a90d9 : C.greenN;
+      this.timingLayer.add(this.add.rectangle(cx, cy, goodW, H - 4, goodColor, 0.45));
+      // Perfect zone
+      const perfW = W * opts.perfectHalf * 2;
+      this.timingLayer.add(this.add.rectangle(cx, cy, perfW, H - 4, C.goldN, 0.9));
+      // center hint line
+      this.timingLayer.add(this.add.rectangle(cx, cy, 2, H + 8, 0xffffff, 0.5));
+
+      // Cursor
+      const cursor = this.add.rectangle(left, cy, 6, H + 16, 0xffffff)
+        .setStrokeStyle(2, 0x000000);
+      this.timingLayer.add(cursor);
+
+      // hint
+      this.timingLayer.add(this.add.text(cx, cy + 42, 'SPACE / ENTER / クリック', {
+        fontFamily: FONT, fontSize: '12px', color: '#9a9ac0',
+      }).setOrigin(0.5));
+
+      // make whole screen tappable to hit
+      const hit = this.add.rectangle(cx, cy, GAME_W, 180, 0x000000, 0.001).setInteractive();
+      hit.on('pointerdown', () => this.pressTiming(false));
+      this.timingLayer.add(hit);
+
+      this.timing = {
+        cb, cursor, left, W, cy,
+        x: 0, dir: 1, speed: opts.speed,
+        perfectHalf: W * opts.perfectHalf, goodHalf: W * opts.goodHalf,
+        elapsed: 0, timeout: opts.timeout, done: false, mode: opts.mode,
+      };
+    }
+
+    update(time, delta) {
+      const tm = this.timing;
+      if (!tm || tm.done) return;
+      tm.x += tm.dir * tm.speed * (delta / 1000);
+      if (tm.x >= tm.W) { tm.x = tm.W; tm.dir = -1; }
+      if (tm.x <= 0) { tm.x = 0; tm.dir = 1; }
+      tm.cursor.x = tm.left + tm.x;
+      tm.elapsed += delta;
+      if (tm.elapsed >= tm.timeout) this.pressTiming(true);
+    }
+
+    pressTiming(forced) {
+      const tm = this.timing;
+      if (!tm || tm.done) return;
+      tm.done = true;
+
+      const offset = Math.abs(tm.x - tm.W / 2);
+      let res;
+      if (forced) res = 'MISS';
+      else if (offset <= tm.perfectHalf) res = 'PERFECT';
+      else if (offset <= tm.goodHalf) res = 'GOOD';
+      else res = 'MISS';
+
+      // freeze cursor + flash judgment
+      tm.cursor.setFillStyle(res === 'PERFECT' ? C.goldN : (res === 'GOOD' ? C.greenN : C.redN));
+      const jcol = res === 'PERFECT' ? C.gold : (res === 'GOOD' ? C.green : C.red);
+      const jt = this.add.text(GAME_W / 2, tm.cy - 76, res + (forced ? ' (おそい)' : ''), {
+        fontFamily: FONT, fontSize: '30px', color: jcol, fontStyle: 'bold',
+        stroke: C.ink, strokeThickness: 6,
+      }).setOrigin(0.5).setDepth(75).setScale(0.4);
+      this.tweens.add({ targets: jt, scale: 1, duration: 160, ease: 'Back.out' });
+      this.tweens.add({ targets: jt, alpha: 0, y: '-=24', delay: 360, duration: 300, onComplete: () => jt.destroy() });
+
+      this.time.delayedCall(200, () => {
+        this.timingLayer.removeAll(true);
+        this.timing = null;
+        tm.cb(res);
+      });
+    }
+
+    // ---- Combo bookkeeping -----------------------------------------
+    registerJudge(res) {
+      if (res === 'PERFECT') {
+        this.combo++;
+        this.stats.perfect++;
+        if (this.combo > this.stats.maxCombo) this.stats.maxCombo = this.combo;
+        this.addSp(15);
+      } else if (res === 'GOOD') {
+        this.addSp(6);
+      } else if (res === 'MISS') {
+        this.combo = 0;
+      }
+      this.updateCombo();
+    }
+
+    addSp(n) {
+      const was = this.player.sp >= this.player.maxSp;
+      this.player.sp = Math.min(this.player.maxSp, this.player.sp + n);
+      this.refreshStatsUI();
+      if (!was && this.player.sp >= this.player.maxSp) {
+        // Just charged — announce it.
+        sfx(this, 'se_magiccircle', 0.4);
+        this.popText(this.spReadyText.x - 24, 510, 'OVERDRIVE!', C.gold, 18);
+      }
+    }
+
+    updateCombo() {
+      if (this.combo >= 2) {
+        this.comboText.setText('COMBO  ×' + this.combo);
+        this.comboText.setAlpha(1).setScale(1.3);
+        this.tweens.add({ targets: this.comboText, scale: 1, duration: 200, ease: 'Back.out' });
+      } else {
+        this.tweens.add({ targets: this.comboText, alpha: 0, duration: 200 });
+      }
+    }
+
+    /* ----------------------------------------------------------------
+       VFX helpers
+       ---------------------------------------------------------------- */
+    spawnSlash(x, y, res, i, scaleMul) {
+      const s = this.add.image(x, y, 'slash')
+        .setDepth(20).setScale((1.4 + (i || 0) * 0.1) * (scaleMul || 1))
+        .setAngle(Phaser.Math.Between(-30, 30) + (i % 2 ? 180 : 0))
+        .setBlendMode(Phaser.BlendModes.ADD);
+      if (res === 'PERFECT') s.setTint(0xffe6a0);
+      else if (res === 'MISS') s.setTint(0x8888aa).setAlpha(0.6);
+      this.tweens.add({
+        targets: s, scaleX: s.scaleX * 1.5, scaleY: s.scaleY * 1.5, alpha: 0,
+        duration: 260, ease: 'Quad.out', onComplete: () => s.destroy(),
+      });
+      if (res === 'PERFECT') this.spawnSpark(x, y, 0xffe6a0, 10);
+    }
+
+    thunderStrike(res) {
+      // Vertical bolt via stacked rectangles + spark burst.
+      const x = this.enemySprite.x, topY = 0, botY = this.enemySprite.y - 30;
+      const colors = res === 'MISS' ? [0x99bbff] : [0xffffff, 0xbfe0ff, 0x7fc0ff];
+      for (let k = 0; k < (res === 'MISS' ? 1 : 3); k++) {
+        const seg = this.add.rectangle(x + Phaser.Math.Between(-10, 10), (topY + botY) / 2, 8, botY - topY, colors[k % colors.length])
+          .setDepth(22).setBlendMode(Phaser.BlendModes.ADD).setAlpha(0.9);
+        this.tweens.add({ targets: seg, alpha: 0, scaleX: 0.2, duration: 260, delay: k * 40, onComplete: () => seg.destroy() });
+      }
+      this.spawnSpark(x, botY - 20, res === 'MISS' ? 0x99bbff : 0xbfe0ff, res === 'MISS' ? 8 : 24);
+    }
+
+    spawnSpark(x, y, color, count) {
+      const p = this.add.particles(x, y, 'spark', {
+        speed: { min: 80, max: 320 }, angle: { min: 0, max: 360 },
+        scale: { start: 0.7, end: 0 }, lifespan: { min: 250, max: 600 },
+        quantity: count, blendMode: 'ADD', tint: color, emitting: false,
+      }).setDepth(25);
+      p.explode(count);
+      this.time.delayedCall(700, () => p.destroy());
+    }
+
+    /* ----------------------------------------------------------------
+       UI helpers
+       ---------------------------------------------------------------- */
+    refreshStatsUI(animate = true) {
+      this.hpBar.set(this.player.hp, animate);
+      this.mpBar.set(this.player.mp, animate);
+      this.spBar.set(this.player.sp, animate);
+      this.hpText.setText(this.player.hp + ' / ' + this.player.maxHp);
+      this.mpText.setText(this.player.mp + ' / ' + this.player.maxMp);
+      if (this.spReadyText) this.spReadyText.setVisible(this.player.sp >= this.player.maxSp);
+    }
+
+    popText(x, y, text, color, size) {
+      const t = this.add.text(x, y, text, {
+        fontFamily: FONT, fontSize: size + 'px', color, fontStyle: 'bold',
+        stroke: C.ink, strokeThickness: 5,
+      }).setOrigin(0.5).setDepth(110).setScale(0.5);
+      this.tweens.add({ targets: t, scale: 1, duration: 150, ease: 'Back.out' });
+      this.tweens.add({ targets: t, y: y - 60, alpha: 0, delay: 250, duration: 650, ease: 'Quad.out', onComplete: () => t.destroy() });
+    }
+
+    showBanner(text, dur, cb) {
+      this.banner.setText(text).setAlpha(0).setScale(0.7);
+      this._bannerSkippable = false;
+      this.tweens.add({ targets: this.banner, alpha: 1, scale: 1, duration: 220, ease: 'Back.out' });
+      this.time.delayedCall(dur, () => {
+        this.tweens.add({
+          targets: this.banner, alpha: 0, duration: 250,
+          onComplete: () => { if (cb) cb(); },
+        });
+      });
+    }
+
+    flashBanner(text, color) {
+      const t = this.add.text(GAME_W / 2, 210, text, {
+        fontFamily: FONT, fontSize: '26px', color, fontStyle: 'bold',
+        stroke: C.ink, strokeThickness: 6,
+      }).setOrigin(0.5).setDepth(115).setScale(0.6);
+      this.tweens.add({ targets: t, scale: 1, duration: 160, ease: 'Back.out' });
+      this.tweens.add({ targets: t, alpha: 0, y: '-=18', delay: 600, duration: 350, onComplete: () => t.destroy() });
+    }
+
+    showHint(text) {
+      this.clearHint();
+      this.hint = this.add.text(GAME_W / 2, 170, text, {
+        fontFamily: FONT, fontSize: '15px', color: '#c7c7e0',
+      }).setOrigin(0.5).setDepth(60);
+      this.tweens.add({ targets: this.hint, alpha: { from: 0.4, to: 1 }, duration: 600, yoyo: true, repeat: -1 });
+    }
+    clearHint() { if (this.hint) { this.hint.destroy(); this.hint = null; } }
+
+    flash(color, alpha, dur) {
+      this.flashRect.setFillStyle(color).setAlpha(alpha);
+      this.tweens.add({ targets: this.flashRect, alpha: 0, duration: dur });
+    }
+
+    hitstop(ms) {
+      this.tweens.timeScale = 0.0001; this.time.timeScale = 0.0001;
+      window.setTimeout(() => { this.tweens.timeScale = 1; this.time.timeScale = 1; }, ms);
+    }
+  }
+
+  /* =====================================================================
+     RESULT
+     ===================================================================== */
+  class ResultScene extends Phaser.Scene {
+    constructor() { super('Result'); }
+    init(data) { this.win = data.win; this.stats = data.stats || {}; }
+
+    create() {
+      const W = GAME_W, H = GAME_H;
+      const bg = this.add.image(W / 2, H / 2, this.win ? 'stage2' : 'stage3');
+      fitCover(bg, W, H);
+      this.add.rectangle(W / 2, H / 2, W, H, 0x05050f, this.win ? 0.35 : 0.62);
+
+      // stop battle bgm, play result audio
+      stopBgm(this);
+      if (this.win) {
+        sfx(this, 'se_fanfare', 0.6);
+        this.time.delayedCall(200, () => sfx(this, 'se_victory', 0.5));
+        this.time.delayedCall(1400, () => lazyBgm(this, 'bgm_battle', 0.3));
+      } else {
+        sfx(this, 'se_down', 0.6);
+        this.time.delayedCall(900, () => lazyBgm(this, 'bgm_boss', 0.18));
+      }
+
+      const title = this.add.text(W / 2, 150, this.win ? 'VICTORY' : 'DEFEAT', {
+        fontFamily: FONT, fontSize: '92px', fontStyle: 'bold',
+        color: this.win ? C.gold : C.red, stroke: C.ink, strokeThickness: 10,
+      }).setOrigin(0.5).setScale(0.3);
+      this.tweens.add({ targets: title, scale: 1, duration: 500, ease: 'Back.out' });
+      this.tweens.add({ targets: title, y: 148, duration: 1800, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+
+      this.add.text(W / 2, 210, this.win ? '魔王アリア ー かつての友を、討ち果たした…' : 'エリシア は 倒れた…', {
+        fontFamily: FONT, fontSize: '18px', color: C.white,
+      }).setOrigin(0.5);
+
+      // Stats panel
+      const panelY = 290;
+      this.add.rectangle(W / 2, panelY + 30, 420, 130, 0x0a0a18, 0.7).setStrokeStyle(2, 0x44446a);
+      const rows = [
+        ['経過ターン', (this.stats.turns || 0) + ''],
+        ['PERFECT 判定', (this.stats.perfect || 0) + ' 回'],
+        ['最大コンボ', '×' + (this.stats.maxCombo || 0)],
+      ];
+      rows.forEach((r, i) => {
+        const y = panelY + i * 30;
+        this.add.text(W / 2 - 180, y, r[0], { fontFamily: FONT, fontSize: '16px', color: '#c7c7e0' }).setOrigin(0, 0.5);
+        this.add.text(W / 2 + 180, y, r[1], { fontFamily: FONT, fontSize: '18px', color: C.gold, fontStyle: 'bold' }).setOrigin(1, 0.5);
+      });
+
+      // Rank (a little reward)
+      if (this.win) {
+        const score = (this.stats.perfect || 0) * 10 + (this.stats.maxCombo || 0) * 8 - (this.stats.turns || 0) * 2;
+        let rank = 'C';
+        if (score >= 110) rank = 'S'; else if (score >= 80) rank = 'A'; else if (score >= 50) rank = 'B';
+        const rk = this.add.text(W / 2, panelY + 96, 'RANK  ' + rank, {
+          fontFamily: FONT, fontSize: '24px', color: rank === 'S' ? C.gold : C.white, fontStyle: 'bold',
+        }).setOrigin(0.5).setAlpha(0);
+        this.tweens.add({ targets: rk, alpha: 1, scale: { from: 2, to: 1 }, duration: 400, delay: 600, ease: 'Back.out' });
+        this.confetti();
+      }
+
+      const press = this.add.text(W / 2, H - 70, '▶  PRESS  ENTER  TO  RETRY', {
+        fontFamily: FONT, fontSize: '20px', color: C.white, fontStyle: 'bold',
+      }).setOrigin(0.5);
+      this.tweens.add({ targets: press, alpha: { from: 1, to: 0.3 }, duration: 700, yoyo: true, repeat: -1 });
+      this.add.text(W / 2, H - 40, 'タイトルに戻ります', { fontFamily: FONT, fontSize: '12px', color: '#8a8aa8' }).setOrigin(0.5);
+
+      this.cameras.main.fadeIn(400, 0, 0, 0);
+      const back = () => {
+        if (this._b) return; this._b = true;
+        stopBgm(this);
+        this.cameras.main.fadeOut(350, 0, 0, 0);
+        this.cameras.main.once('camerafadeoutcomplete', () => this.scene.start('Title'));
+      };
+      this.time.delayedCall(900, () => {
+        this.input.keyboard.on('keydown-ENTER', back);
+        this.input.keyboard.on('keydown-SPACE', back);
+        this.input.on('pointerdown', back);
+      });
+      this.input.keyboard.on('keydown-M', () => { this.sound.mute = !this.sound.mute; });
+    }
+
+    confetti() {
+      const p = this.add.particles(GAME_W / 2, -20, 'conf', {
+        x: { min: 0, max: GAME_W }, y: -10,
+        speedY: { min: 120, max: 260 }, speedX: { min: -60, max: 60 },
+        scale: { min: 0.6, max: 1.4 }, lifespan: 3500, frequency: 40,
+        gravityY: 60, rotate: { min: 0, max: 360 },
+        tint: [0xffd54a, 0x54e08a, 0x5ab0ff, 0xff5a6e, 0xffffff],
+      }).setDepth(5);
+      this.time.delayedCall(2600, () => p.stop());
+    }
+  }
+
+  /* =====================================================================
+     Shared helpers
+     ===================================================================== */
+
+  // Health/MP bar with a delayed "damage trail".
+  class Bar {
+    constructor(scene, x, y, w, h, max, color, isEnemy) {
+      this.scene = scene; this.x = x; this.y = y; this.w = w; this.h = h;
+      this.max = max; this.cur = max; this.color = color;
+      this.bg = scene.add.rectangle(x, y, w, h, 0x10101c).setOrigin(0, 0.5)
+        .setStrokeStyle(2, 0x000000).setDepth(49);
+      this.trail = scene.add.rectangle(x, y, w, h, isEnemy ? 0xff8888 : 0xffffff)
+        .setOrigin(0, 0.5).setDepth(49).setAlpha(0.5);
+      this.fill = scene.add.rectangle(x, y, w, h, color).setOrigin(0, 0.5).setDepth(50);
+    }
+    set(v, animate = true) {
+      v = Math.max(0, Math.min(this.max, v));
+      this.cur = v;
+      const target = this.w * (v / this.max);
+      if (animate) {
+        this.scene.tweens.add({ targets: this.fill, width: target, duration: 280, ease: 'Quad.out' });
+        this.scene.tweens.add({ targets: this.trail, width: target, duration: 600, delay: 180, ease: 'Quad.out' });
+      } else {
+        this.fill.width = target; this.trail.width = target;
+      }
+    }
+  }
+
+  // Scale an image to COVER a target rect (like CSS background-size: cover).
+  function fitCover(img, w, h) {
+    const s = Math.max(w / img.width, h / img.height);
+    img.setScale(s);
+  }
+
+  // BGM management via registry (one looping track at a time).
+  function playBgm(scene, key, vol) {
+    try {
+      if (!scene.cache.audio.exists(key)) return; // asset failed/missing — skip silently
+      const curKey = scene.registry.get('bgmKey');
+      const cur = scene.registry.get('bgmObj');
+      if (curKey === key && cur && cur.isPlaying) return;
+      if (cur) { try { cur.stop(); cur.destroy(); } catch (e) {} }
+      const m = scene.sound.add(key, { loop: true, volume: vol == null ? 0.35 : vol });
+      m.play();
+      scene.registry.set('bgmObj', m);
+      scene.registry.set('bgmKey', key);
+    } catch (e) {}
+  }
+  // Load a BGM on demand (if not already cached) then play it. Never blocks the boot.
+  function lazyBgm(scene, key, vol) {
+    try {
+      if (scene.cache.audio.exists(key)) { playBgm(scene, key, vol); return; }
+      scene.registry.set('bgmPending', key); // intent marker (survives scene changes)
+      scene.load.once('filecomplete-audio-' + key, () => {
+        if (scene.scene.isActive() && scene.registry.get('bgmPending') === key) playBgm(scene, key, vol);
+      });
+      scene.load.audio(key, 'music/' + key + '.mp3');
+      scene.load.start();
+    } catch (e) {}
+  }
+  function stopBgm(scene) {
+    const cur = scene.registry.get('bgmObj');
+    if (cur) { try { cur.stop(); cur.destroy(); } catch (e) {} }
+    scene.registry.set('bgmObj', null);
+    scene.registry.set('bgmKey', null);
+  }
+  function sfx(scene, key, vol) {
+    try { scene.sound.play(key, { volume: vol == null ? 0.5 : vol }); } catch (e) {}
+  }
+
+  /* =====================================================================
+     Launch
+     ===================================================================== */
+  const config = {
+    type: Phaser.AUTO,
+    width: GAME_W, height: GAME_H,
+    parent: 'game-root',
+    backgroundColor: '#05050a',
+    pixelArt: true,
+    roundPixels: true,
+    scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+    // Abort stalled asset requests so a hung connection can't freeze the loader forever.
+    loader: { timeout: 30000 },
+    scene: [BootScene, TitleScene, BattleScene, ResultScene],
+  };
+  window.game = new Phaser.Game(config);
+  </script>
+</body>
+</html>
