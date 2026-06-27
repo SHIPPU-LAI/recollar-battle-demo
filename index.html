@@ -84,10 +84,10 @@
       flavor: '魔王に仕えし、堕ちた騎士。その剣は王城への門を阻む。',
       bossIntro: true,
       voice: [
-        [0.75, 'この先には…進ませない'],
-        [0.50, '…なかなかやるな'],
-        [0.25, 'くっ…まだだ！'],
-        [0.08, '魔王様…申し訳ございません…'],
+        [0.75, '勇者よ、これ以上は行かせん！'],
+        [0.50, '...なかなかやるな'],
+        [0.25, '...ッ！まだだ...まだ終わらせん！'],
+        [0.08, '魔王さま、やつは危険です...'],
       ],
     },
     {
@@ -100,10 +100,10 @@
       flavor: 'かつての仲間。裏切られ、復讐に堕ちた。',
       bossIntro: true,
       voice: [
-        [0.75, 'まだ…その程度か'],
-        [0.48, '…っ！ちからが…あふれる…！'],
-        [0.25, 'なぜ…まだ立っている…'],
-        [0.08, '…わかった…エリシア…あなたの勝ちよ…'],
+        [0.75, 'ふふ、驚くことでもない'],
+        [0.48, 'さて、遊びはここまでにしよう'],
+        [0.25, '...ッ！...私だって守らなければならないものがあるの！'],
+        [0.08, '...はっ...はっ...そんな...'],
       ],
     },
   ];
@@ -818,17 +818,23 @@
       this.raging = false;
 
       // --- Damage log panel (right side) ---
-      const logX = GAME_W - 6, logY = 108;
-      this.add.rectangle(logX - 82, logY + 63, 160, 148, 0x060614, 0.70)
-        .setStrokeStyle(1, 0x2a2a50).setDepth(48).setOrigin(1, 0);
-      this.add.text(logX - 12, logY + 4, 'LOG', {
+      // Panel spans x: 792–952, y: 108–256
+      const logPanelR = GAME_W - 8;   // 952  right edge
+      const logPanelW = 160;
+      const logPanelL = logPanelR - logPanelW; // 792  left edge
+      const logY = 108;
+      const logPanelH = 148;
+      this.add.rectangle(logPanelL + logPanelW / 2, logY + logPanelH / 2, logPanelW, logPanelH, 0x060614, 0.72)
+        .setStrokeStyle(1, 0x2a2a50).setDepth(48);
+      this.add.text(logPanelR - 6, logY + 6, 'LOG', {
         fontFamily: FONT, fontSize: '10px', color: '#4a4a6a', fontStyle: 'bold',
       }).setOrigin(1, 0).setDepth(50);
       this._logLines = [];
       for (let i = 0; i < 5; i++) {
         this._logLines.push(
-          this.add.text(logX - 12, logY + 22 + i * 24, '', {
+          this.add.text(logPanelR - 6, logY + 22 + i * 24, '', {
             fontFamily: FONT, fontSize: '11px', color: '#6a6a90',
+            fixedWidth: logPanelW - 12, align: 'right',
           }).setOrigin(1, 0).setDepth(50)
         );
       }
@@ -2097,15 +2103,16 @@
       this.time.delayedCall(600, () => lazyBgm(this, 'bgm_battle', 0.22));
 
       const LINES = [
-        { sp: 'エリシア', tx: 'アリア…もう終わりだ' },
-        { sp: 'アリア',   tx: '…エリシア。久しぶりね' },
-        { sp: 'アリア',   tx: 'あの頃の約束、まだ覚えてる？' },
-        { sp: 'エリシア', tx: 'ああ。"世界を変えよう"って…' },
-        { sp: 'アリア',   tx: 'ふふ…馬鹿ね、あなたは' },
-        { sp: 'アリア',   tx: '…ごめんなさい。守ってあげられなかった' },
-        { sp: 'エリシア', tx: 'アリア！' },
-        { sp: '―',       tx: '――――――' },
-        { sp: '',         tx: 'かつての友を、討ち果たした…' },
+        { sp: 'アリア',   tx: '...はっ...はっ...そんな...' },
+        { sp: 'アリア',   tx: 'っ......リーナ...ごめんね...' },
+        { sp: '―',       tx: '彼女は剣を振り下ろした' },
+        { sp: '―',       tx: '死の町の静けさはまるで世界の全てを飲み込もうと渦巻いてる' },
+        { sp: '―',       tx: 'これって本当に正解だったのか' },
+        { sp: '―',       tx: '少女はふと思った' },
+        { sp: '―',       tx: '彼女が残したペンダントを握りしめて' },
+        { sp: '―',       tx: '「そういえば、彼女の妹の名前って...」' },
+        { sp: '―',       tx: '少女の声はやがて静寂に包まれた' },
+        { sp: '',         tx: 'Fin.' },
       ];
       this.lines = LINES;
       this.page = -1;
