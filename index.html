@@ -263,7 +263,7 @@
         sfx(this, 'se_draw', 0.6);
         this.cameras.main.fadeOut(450, 0, 0, 0);
         this.cameras.main.once('camerafadeoutcomplete', () => {
-          this.scene.start('Battle', {
+          this.scene.start('Select', {
             index: 0, hp: PLAYER_BASE.maxHp, mp: PLAYER_BASE.maxMp, sp: 0,
             stats: { turns: 0, perfect: 0, maxCombo: 0 },
           });
@@ -273,6 +273,252 @@
       this.input.keyboard.on('keydown-SPACE', start);
       this.input.on('pointerdown', start);
       this.input.keyboard.on('keydown-M', () => { this.sound.mute = !this.sound.mute; });
+    }
+  }
+
+  /* =====================================================================
+     TUTORIAL
+     ===================================================================== */
+  class TutorialScene extends Phaser.Scene {
+    constructor() { super('Tutorial'); }
+    init(data) { this.nextData = data; this.page = 0; }
+
+    create() {
+      const W = GAME_W, H = GAME_H;
+      const bg = this.add.image(W/2, H/2, 'stage1'); fitCover(bg, W, H); bg.setTint(0x4455aa);
+      this.add.rectangle(W/2, H/2, W, H, 0x05050f, 0.58);
+
+      this.add.text(W/2, 36, 'チュートリアル', { fontFamily: FONT, fontSize: '28px', color: C.gold, fontStyle: 'bold', stroke: C.ink, strokeThickness: 6 }).setOrigin(0.5);
+
+      const PAGES = [
+        {
+          title: '⚔  こうげき  ―  3連撃タイミング',
+          body: [
+            '「こうげき」を選ぶと 3回のタイミング入力が発生します。',
+            '中央のゾーンに合わせて SPACE / ENTER / クリック を押してください。',
+            '',
+            '  PERFECT … 高ダメージ＋OD ゲージ増加',
+            '  GOOD    … 中ダメージ＋OD ゲージ小増加',
+            '  MISS    … 低ダメージ',
+            '',
+            '3回すべて PERFECT → PERFECT COMBO フィニッシュ！',
+            '仲間シズが確率で追撃射撃を放ちます。',
+          ],
+        },
+        {
+          title: '🛡  ガード・パリィ  ―  敵ターン',
+          body: [
+            '敵の攻撃もタイミング入力で防げます。',
+            '',
+            '  PERFECT（パリィ）  … ダメージ 90%カット＋MP回復＋反撃チャンス！',
+            '  GOOD  （ガード）   … ダメージ 50%カット',
+            '  MISS  （直撃）     … フルダメージ＋画面シェイク',
+            '',
+            '「ぼうぎょ」コマンドを選ぶと次の攻撃が当たりやすくなり MP も回復します。',
+            '魔王アリア 第二形態の「詠唱攻撃」はパリィ不可。ぼうぎょで備えよ！',
+          ],
+        },
+        {
+          title: '✦  スキル・オーバードライブ',
+          body: [
+            '「スキル」コマンドでサブメニューが開きます（MP 消費）。',
+            '  ヘヴィースラッシュ  … 大ダメージ一撃',
+            '  ホーリー・レイン    … ダメージ＋HP回復',
+            '  ロード・オブ・ナイト … ダメージ＋HP吸収',
+            '  カウンタースタンス  … 次の敵攻撃を完全防御',
+            '',
+            'PERFECT / GOOD でOD（オーバードライブ）ゲージが貯まります。',
+            '満タンで「ひっさつ」が解禁 → 超ダメージ必殺技！ボス戦まで温存を。',
+          ],
+        },
+        {
+          title: '👥  仲間  ―  シズ & ノエル',
+          body: [
+            'エリシアを後方から自動サポートします（前線には出ません）。',
+            '',
+            '  シズ（銃使い）',
+            '    追撃射撃 … PERFECT COMBO 後に確率で追撃',
+            '    パッシブ … PERFECT ダメージを常時 +20%',
+            '',
+            '  ノエル（治癒・支援）',
+            '    再生の祈り … 毎ターン HP を少し回復',
+            '    守護       … 被弾時 30%確率でダメージ軽減',
+          ],
+        },
+      ];
+
+      this.panelBg = this.add.rectangle(W/2, H/2 + 10, 820, 330, 0x0d0d1e, 0.85)
+        .setStrokeStyle(2, 0x44446a);
+      this.titleT = this.add.text(W/2, 110, '', { fontFamily: FONT, fontSize: '22px', color: C.gold, fontStyle: 'bold', stroke: C.ink, strokeThickness: 5 }).setOrigin(0.5);
+      this.bodyT  = this.add.text(W/2 - 370, 155, '', { fontFamily: FONT, fontSize: '15px', color: '#d8d8f0', lineSpacing: 6 }).setOrigin(0, 0);
+
+      const pip = this.add.text(W/2, H - 88, '', { fontFamily: FONT, fontSize: '14px', color: '#9a9ac0' }).setOrigin(0.5);
+      const next = this.add.text(W/2, H - 58, 'ENTER / クリック　→　次へ', { fontFamily: FONT, fontSize: '18px', color: C.white, fontStyle: 'bold' }).setOrigin(0.5);
+      this.tweens.add({ targets: next, alpha: { from:1, to:0.3 }, duration: 700, yoyo: true, repeat: -1 });
+      const skip = this.add.text(W - 20, H - 26, 'ESC でスキップ', { fontFamily: FONT, fontSize: '13px', color: '#7a7a9a' }).setOrigin(1, 1).setInteractive();
+      skip.on('pointerdown', () => this.finish());
+
+      this._pip = pip; this._pages = PAGES;
+      this.showPage(0);
+
+      const advance = () => {
+        if (this.page < PAGES.length - 1) { sfx(this, 'se_draw', 0.3); this.showPage(this.page + 1); }
+        else this.finish();
+      };
+      this.input.keyboard.on('keydown-ENTER', advance);
+      this.input.keyboard.on('keydown-SPACE', advance);
+      this.input.on('pointerdown', advance);
+      this.input.keyboard.on('keydown-ESC', () => this.finish());
+      this.input.keyboard.on('keydown-M', () => { this.sound.mute = !this.sound.mute; });
+      this.cameras.main.fadeIn(350, 0, 0, 0);
+    }
+
+    showPage(i) {
+      this.page = i;
+      const p = this._pages[i];
+      this.titleT.setText(p.title);
+      this.bodyT.setText(p.body.join('\n'));
+      this._pip.setText((i+1) + ' / ' + this._pages.length);
+    }
+
+    finish() {
+      if (this._done) return; this._done = true;
+      this.cameras.main.fadeOut(350, 0, 0, 0);
+      this.cameras.main.once('camerafadeoutcomplete', () => this.scene.start('Select', this.nextData));
+    }
+  }
+
+  /* =====================================================================
+     SELECT (アビリティ・スキル選択)
+     ===================================================================== */
+  const SKILL_POOL = [
+    { key: 'heavy', label: 'ヘヴィースラッシュ', sub: '−12MP  大ダメージ',        icon: '⚔', mp: 12 },
+    { key: 'holy',  label: 'ホーリー・レイン',   sub: '−14MP  ダメージ+HP回復',   icon: '✚', mp: 14 },
+    { key: 'night', label: 'ロード・オブ・ナイト', sub: '−12MP  ダメージ+HP吸収', icon: '☾', mp: 12 },
+    { key: 'counter', label: 'カウンタースタンス', sub: '−12MP  次撃を完全防御',  icon: '◈', mp: 12 },
+  ];
+
+  class SelectScene extends Phaser.Scene {
+    constructor() { super('Select'); }
+    init(data) {
+      this.battleData = data;
+      this.abilityParry = true;           // パリィからの反撃
+      this.selectedSkills = new Set(['heavy','holy','night']); // default 3
+    }
+
+    create() {
+      const W = GAME_W, H = GAME_H;
+      const bg = this.add.image(W/2, H/2, 'stage3'); fitCover(bg, W, H); bg.setTint(0x44446a);
+      this.add.rectangle(W/2, H/2, W, H, 0x05050f, 0.60);
+
+      this.add.text(W/2, 42, 'A B I L I T Y   S E L E C T', { fontFamily: FONT, fontSize: '13px', color: C.gold }).setOrigin(0.5);
+      this.add.text(W/2, 72, '出撃前の準備', { fontFamily: FONT, fontSize: '30px', color: C.white, fontStyle: 'bold', stroke: C.ink, strokeThickness: 6 }).setOrigin(0.5);
+
+      // ---- LEFT: アビリティ ----
+      this.add.text(180, 118, 'アビリティ', { fontFamily: FONT, fontSize: '15px', color: '#c89bff', fontStyle: 'bold' }).setOrigin(0.5);
+      this.add.rectangle(180, 118, 290, 2, 0xc89bff, 0.5).setOrigin(0.5, 0).setY(130);
+
+      const ab = { key:'parry', label:'パリィからの反撃', desc:'パリィ成功後に追撃タイミング\n入力ウィンドウが開く', icon:'⚡' };
+      const abY = 200;
+      this._abBox = this.add.rectangle(180, abY, 290, 80, 0x1a2a1a, 0.92).setStrokeStyle(2, C.greenN).setInteractive();
+      this.add.text(60, abY - 18, ab.icon, { fontSize: '26px' });
+      this.add.text(90, abY - 16, ab.label, { fontFamily: FONT, fontSize: '14px', color: C.white, fontStyle: 'bold' });
+      this.add.text(90, abY + 4,  ab.desc,  { fontFamily: FONT, fontSize: '11px', color: '#9a9ac0' });
+      this._abTog = this.add.text(290, abY, 'ON', { fontFamily: FONT, fontSize: '20px', color: C.green, fontStyle: 'bold' }).setOrigin(0.5);
+
+      this._abBox.on('pointerdown', () => {
+        this.abilityParry = !this.abilityParry;
+        const on = this.abilityParry;
+        this._abBox.setStrokeStyle(2, on ? C.greenN : 0x44446a);
+        this._abBox.setFillStyle(on ? 0x1a2a1a : 0x12121f, 0.92);
+        this._abTog.setText(on ? 'ON' : 'OFF').setColor(on ? C.green : '#7a6a6a');
+        sfx(this, 'se_draw', 0.25);
+      });
+
+      // hint
+      this.add.text(180, 270, '「パリィからの反撃」：パリィ後、追加のタイミング入力でカウンターダメージ。', { fontFamily: FONT, fontSize: '11px', color: '#7a7aaa', wordWrap: { width: 280 } }).setOrigin(0.5);
+
+      // Tutorial link
+      const tutBtn = this.add.text(180, 430, '? チュートリアルを見る', { fontFamily: FONT, fontSize: '14px', color: '#9a9ac0', fontStyle: 'bold' }).setOrigin(0.5).setInteractive();
+      tutBtn.on('pointerdown', () => { sfx(this, 'se_draw', 0.3); this.scene.start('Tutorial', this.battleData); });
+      tutBtn.on('pointerover', () => tutBtn.setColor(C.white));
+      tutBtn.on('pointerout', () => tutBtn.setColor('#9a9ac0'));
+
+      // ---- RIGHT: スキル選択 ----
+      this.add.text(700, 118, 'スキル選択  (3つ選ぶ)', { fontFamily: FONT, fontSize: '15px', color: '#5ab0ff', fontStyle: 'bold' }).setOrigin(0.5);
+      this.add.rectangle(700, 118, 380, 2, 0x5ab0ff, 0.5).setOrigin(0.5, 0).setY(130);
+
+      this._skillBoxes = [];
+      SKILL_POOL.forEach((sk, i) => {
+        const sy = 175 + i * 68;
+        const sel = this.selectedSkills.has(sk.key);
+        const box = this.add.rectangle(700, sy, 370, 58, sel ? 0x12201e : 0x12121f, 0.92)
+          .setStrokeStyle(2, sel ? C.greenN : 0x44446a).setInteractive();
+        this.add.text(525, sy, sk.icon, { fontSize: '22px' }).setOrigin(0, 0.5);
+        this.add.text(556, sy - 10, sk.label, { fontFamily: FONT, fontSize: '13px', color: C.white, fontStyle: 'bold' });
+        this.add.text(556, sy + 10, sk.sub,   { fontFamily: FONT, fontSize: '11px', color: '#9a9ac0' });
+        const chk = this.add.text(862, sy, sel ? '☑' : '☐', { fontFamily: FONT, fontSize: '22px', color: sel ? C.green : '#7a7a9a' }).setOrigin(0.5);
+        this._skillBoxes.push({ box, chk, key: sk.key });
+
+        box.on('pointerdown', () => {
+          if (this.selectedSkills.has(sk.key)) {
+            if (this.selectedSkills.size <= 1) { sfx(this, 'se_hit', 0.2); return; }
+            this.selectedSkills.delete(sk.key);
+            box.setStrokeStyle(2, 0x44446a); box.setFillStyle(0x12121f, 0.92);
+            chk.setText('☐').setColor('#7a7a9a');
+          } else {
+            if (this.selectedSkills.size >= 3) { sfx(this, 'se_hit', 0.2); this.flashWarn('最大3つまで選択できます'); return; }
+            this.selectedSkills.add(sk.key);
+            box.setStrokeStyle(2, C.greenN); box.setFillStyle(0x12201e, 0.92);
+            chk.setText('☑').setColor(C.green);
+          }
+          sfx(this, 'se_draw', 0.25);
+          this.updateCountLabel();
+        });
+        box.on('pointerover', () => box.setStrokeStyle(3, C.goldN));
+        box.on('pointerout', () => box.setStrokeStyle(2, this.selectedSkills.has(sk.key) ? C.greenN : 0x44446a));
+      });
+      this._countLabel = this.add.text(700, 455, '', { fontFamily: FONT, fontSize: '12px', color: '#9a9ac0' }).setOrigin(0.5);
+      this.updateCountLabel();
+
+      // ---- divider ----
+      this.add.rectangle(480, H/2, 2, 320, 0x33335a, 0.8);
+
+      // ---- START button ----
+      const startBtn = this.add.text(W/2, H - 42, '▶  ENTER / CLICK  ―  バトル開始', {
+        fontFamily: FONT, fontSize: '22px', color: C.white, fontStyle: 'bold', stroke: C.ink, strokeThickness: 5,
+      }).setOrigin(0.5).setInteractive();
+      this.tweens.add({ targets: startBtn, alpha: { from:1, to:0.3 }, duration: 700, yoyo: true, repeat: -1 });
+      startBtn.on('pointerdown', () => this.startBattle());
+      this.input.keyboard.on('keydown-ENTER', () => this.startBattle());
+      this.input.keyboard.on('keydown-M', () => { this.sound.mute = !this.sound.mute; });
+
+      this.cameras.main.fadeIn(400, 0, 0, 0);
+      sfx(this, 'se_draw', 0.35);
+    }
+
+    updateCountLabel() {
+      this._countLabel.setText('選択中: ' + this.selectedSkills.size + ' / 3');
+    }
+
+    flashWarn(text) {
+      const t = this.add.text(GAME_W/2, GAME_H/2, text, {
+        fontFamily: FONT, fontSize: '18px', color: C.red, fontStyle: 'bold', stroke: C.ink, strokeThickness: 5,
+      }).setOrigin(0.5).setDepth(200);
+      this.tweens.add({ targets: t, alpha: 0, y: '-=20', duration: 900, onComplete: () => t.destroy() });
+    }
+
+    startBattle() {
+      if (this._started) return; this._started = true;
+      sfx(this, 'se_draw', 0.55);
+      this.cameras.main.fadeOut(400, 0, 0, 0);
+      this.cameras.main.once('camerafadeoutcomplete', () => {
+        this.scene.start('Battle', {
+          ...this.battleData,
+          abilityParry: this.abilityParry,
+          selectedSkills: [...this.selectedSkills],
+        });
+      });
     }
   }
 
@@ -290,18 +536,25 @@
         maxMp: PLAYER_BASE.maxMp, mp: data.mp,
         maxSp: PLAYER_BASE.maxSp, sp: data.sp || 0,
       };
-      this.party = ['shizu', 'noel']; // active companions
+      this.party = ['shizu', 'noel'];
       this.waveIndex = 0;
       const w = this.enc.waves[0];
       this.enemy = { maxHp: w.hp, hp: w.hp };
       this.stats = data.stats || { turns: 0, perfect: 0, maxCombo: 0 };
       this.combo = 0;
       this.guarding = false;
+      this.counterStance = false; // カウンタースタンス (absorb next hit)
       this.enemyTurnCount = 0;
-      this.phase = 1;       // boss phase (アリア goes to 2)
-      this.casting = false; // boss is mid-cast (phase 2 詠唱攻撃)
+      this.phase = 1;
+      this.casting = false;
+      this.phase2Pending = false;
       this.state = 'INIT';
       this.timing = null;
+      // Ability / skill loadout from SelectScene
+      this.abilityParry = data.abilityParry !== false; // パリィからの反撃 (default ON)
+      this.selectedSkills = data.selectedSkills || ['heavy','holy','night'];
+      // Cutin tracking (first ally action shows dramatic cutin)
+      this.firstAllyActDone = data.firstAllyActDone || { shizu: false, noel: false };
     }
 
     curWave() { return this.enc.waves[this.waveIndex]; }
@@ -327,11 +580,72 @@
     allyAct(key, text) {
       const a = this.allies.find(x => x.key === key);
       if (!a) return;
+      if (!this.firstAllyActDone[key]) {
+        this.firstAllyActDone[key] = true;
+        this.showAllyCutin(key, text);
+        return;
+      }
+      this._allyBubble(key, text);
+    }
+
+    _allyBubble(key, text) {
+      const a = this.allies.find(x => x.key === key);
+      if (!a) return;
       this.tweens.add({ targets: a.cont, scaleX: { from: 1.3, to: 1 }, scaleY: { from: 1.3, to: 1 }, duration: 320, ease: 'Back.out' });
       const t = this.add.text(a.x + 34, a.y - 26, COMPANIONS[key].name + '：' + text, {
         fontFamily: FONT, fontSize: '13px', color: '#ffe6a0', fontStyle: 'bold', stroke: C.ink, strokeThickness: 4,
       }).setOrigin(0, 0.5).setDepth(110);
       this.tweens.add({ targets: t, x: '+=10', alpha: { from: 1, to: 0 }, delay: 500, duration: 500, onComplete: () => t.destroy() });
+    }
+
+    showAllyCutin(key, text) {
+      const c = COMPANIONS[key];
+      const W = GAME_W, H = GAME_H;
+
+      // Dark overlay (non-blocking — game flow continues, cutin is foreground FX)
+      const overlay = this.add.rectangle(W/2, H/2, W, H, 0x000000, 0).setDepth(190);
+      this.tweens.add({ targets: overlay, alpha: 0.78, duration: 200 });
+
+      // Diagonal slash lines for drama
+      const line1 = this.add.rectangle(W/2, H/2 - 60, W * 1.4, 3, 0xffffff, 0.18).setDepth(191).setAngle(-15);
+      const line2 = this.add.rectangle(W/2, H/2 + 60, W * 1.4, 3, 0xffffff, 0.12).setDepth(191).setAngle(-15);
+
+      // Large companion circle (center-left)
+      const cx = W/2 - 90, cy = H/2;
+      const ring = this.add.circle(cx, cy, 4, c.color, 0.95).setDepth(192).setStrokeStyle(5, 0xffffff);
+      this.tweens.add({ targets: ring, radius: 72, duration: 260, ease: 'Back.out' });
+      const initT = this.add.text(cx, cy - 2, c.initial, {
+        fontFamily: FONT, fontSize: '68px', color: '#10100c', fontStyle: 'bold',
+      }).setOrigin(0.5).setDepth(193).setAlpha(0);
+      this.tweens.add({ targets: initT, alpha: 1, duration: 180, delay: 180 });
+
+      // Name & role (slides in from right)
+      const nameT = this.add.text(cx + 140, cy - 22, c.name, {
+        fontFamily: FONT, fontSize: '40px', color: C.white, fontStyle: 'bold',
+        stroke: C.ink, strokeThickness: 8,
+      }).setOrigin(0, 0.5).setDepth(193).setAlpha(0).setX(cx + 170);
+      this.tweens.add({ targets: nameT, alpha: 1, x: cx + 140, duration: 240, delay: 140 });
+
+      const roleColor = '#' + c.color.toString(16).padStart(6, '0');
+      const roleT = this.add.text(cx + 140, cy + 18, c.role, {
+        fontFamily: FONT, fontSize: '17px', color: roleColor, fontStyle: 'bold',
+      }).setOrigin(0, 0.5).setDepth(193).setAlpha(0);
+      this.tweens.add({ targets: roleT, alpha: 1, duration: 220, delay: 240 });
+
+      const actT = this.add.text(cx + 140, cy + 50, '「' + text + '」', {
+        fontFamily: FONT, fontSize: '16px', color: '#ffe6a0',
+      }).setOrigin(0, 0.5).setDepth(193).setAlpha(0);
+      this.tweens.add({ targets: actT, alpha: 1, duration: 200, delay: 320 });
+
+      sfx(this, 'se_draw', 0.55);
+
+      const objs = [overlay, line1, line2, ring, initT, nameT, roleT, actT];
+      this.time.delayedCall(1500, () => {
+        this.tweens.add({
+          targets: objs, alpha: 0, duration: 280,
+          onComplete: () => { objs.forEach(o => o.destroy()); this._allyBubble(key, text); },
+        });
+      });
     }
 
     // シズ：パーフェクトコンボ後の追撃射撃
@@ -360,7 +674,10 @@
       // --- Background ---
       const bg = this.add.image(W / 2, H / 2, this.enc.bg);
       fitCover(bg, W, H); bg.setDepth(0);
+      this.bgImage = bg;
       this.add.rectangle(W / 2, H / 2, W, H, 0x05050f, 0.18).setDepth(0);
+      // Phase-2 dark overlay (initially invisible, fades in on 第二形態)
+      this.darkBgOverlay = this.add.rectangle(W/2, H/2, W, H, 0x0a0020, 0).setDepth(1);
       // ground shadow band
       this.add.rectangle(W / 2, GROUND_Y + 8, W, 60, 0x000000, 0.28).setDepth(1);
 
@@ -512,13 +829,15 @@
         { key: 'guard',   label: 'ぼうぎょ', sub: 'GUARD +MP', icon: '🛡' },
         { key: 'special', label: 'ひっさつ', sub: 'OVERDRIVE', icon: '★' },
       ];
-      // Skill sub-menu (skills lifted from the original "To The End").
-      const skills = [
-        { key: 'heavy', label: 'ヘヴィースラッシュ', sub: '−12MP 大ダメージ', icon: '⚔', mp: 12 },
-        { key: 'holy',  label: 'ホーリー・レイン',   sub: '−14MP HP回復', icon: '✚', mp: 14 },
-        { key: 'night', label: 'ロードオブナイト',   sub: '−12MP HP吸収', icon: '☾', mp: 12 },
-        { key: 'back',  label: 'もどる',           sub: 'CANCEL', icon: '◀', mp: 0 },
+      // Skill sub-menu — filtered to player's selected loadout + back button.
+      const ALL_SKILLS = [
+        { key: 'heavy',   label: 'ヘヴィースラッシュ', sub: '−12MP 大ダメージ',    icon: '⚔', mp: 12 },
+        { key: 'holy',    label: 'ホーリー・レイン',   sub: '−14MP HP回復',       icon: '✚', mp: 14 },
+        { key: 'night',   label: 'ロード・オブ・ナイト', sub: '−12MP HP吸収',     icon: '☾', mp: 12 },
+        { key: 'counter', label: 'カウンタースタンス',  sub: '−12MP 次撃を完全防御', icon: '◈', mp: 12 },
       ];
+      const skills = ALL_SKILLS.filter(s => this.selectedSkills.includes(s.key))
+        .concat([{ key: 'back', label: 'もどる', sub: 'CANCEL', icon: '◀', mp: 0 }]);
       this.cmdButtons = this.makeButtonRow(cmds, 'cmd');
       this.skillButtons = this.makeButtonRow(skills, 'skill');
       this.cmdIndex = 0;
@@ -692,6 +1011,23 @@
 
     // ---- SKILL execution (timing magic with per-skill effects) -----
     doSkill(key, mpCost) {
+      // カウンタースタンス — no timing, just set the stance flag
+      if (key === 'counter') {
+        this.player.mp -= mpCost;
+        this.refreshStatsUI();
+        this.counterStance = true;
+        sfx(this, 'se_guard', 0.6);
+        sfx(this, 'se_magiccircle', 0.4);
+        const sh = this.add.image(this.alicia.x, this.alicia.y - 60, 'shield')
+          .setScale(0.1).setDepth(40).setAlpha(0).setTint(0xc89bff);
+        this.tweens.add({ targets: sh, scale: 1.8, alpha: 1, duration: 220, ease: 'Back.out' });
+        this.tweens.add({ targets: sh, alpha: 0, duration: 400, delay: 700, onComplete: () => sh.destroy() });
+        this.spawnSpark(this.alicia.x, this.alicia.y - 70, 0xc89bff, 20);
+        this.showBanner('カウンタースタンス！\n次の攻撃を完全防御', 900, null);
+        this.time.delayedCall(820, () => this.afterPlayerAction());
+        return;
+      }
+
       const SKILLS = {
         heavy: { name: 'ヘヴィースラッシュ', vfx: 'slash', se: 'se_slash',   dmg: { PERFECT: 78, GOOD: 46, MISS: 18 }, flash: 0xfff2b0 },
         holy:  { name: 'ホーリー・レイン',   vfx: 'holy',  se: 'se_holy',    dmg: { PERFECT: 54, GOOD: 32, MISS: 12 }, flash: 0xfff2c0, heal: 0.22 },
@@ -871,7 +1207,68 @@
 
     afterPlayerAction() {
       if (this.enemy.hp <= 0) { this.onEnemyDefeated(); return; }
+      if (this.phase2Pending) {
+        this.phase2Pending = false;
+        this.runPhase2Cinematic();
+        return;
+      }
       this.enemyTurn();
+    }
+
+    runPhase2Cinematic() {
+      this.state = 'OVER';
+      this.setMenuVisible(false);
+      this.setSkillMenuVisible(false);
+
+      sfx(this, 'se_explosion', 0.68);
+      sfx(this, 'se_slowmo', 0.55);
+      this.cameras.main.shake(900, 0.028);
+      this.flash(0xffffff, 0.95, 500);
+
+      stopBgm(this);
+
+      // Dark background transition
+      this.tweens.add({ targets: this.bgImage, alpha: 0.5, duration: 1200 });
+      this.tweens.add({ targets: this.darkBgOverlay, alpha: 0.70, duration: 1200 });
+
+      // Enemy: full HP restore + dramatic tint
+      this.time.delayedCall(500, () => {
+        this.enemy.hp = this.enemy.maxHp;
+        this.enemyBar.set(this.enemy.maxHp, true);
+        sfx(this, 'se_magiccircle', 0.65);
+        this.spawnSpark(this.enemySprite.x, this.enemySprite.y - 70, 0xcc00ff, 40);
+        this.spawnSpark(this.enemySprite.x, this.enemySprite.y - 70, 0xffffff, 22);
+        this.popText(this.enemySprite.x, this.enemySprite.y - 130, 'HP 全 回 復 ！', '#ee88ff', 30);
+        this.enemySprite.setTint(0xaa00ff);
+        this.tweens.add({ targets: this.rageVignette, alpha: { from: 0, to: 0.32 }, duration: 700, yoyo: true, repeat: -1 });
+      });
+
+      // Big banner
+      this.time.delayedCall(700, () => {
+        this.showBanner('― 封 印 解 除 ―\n' + this.enc.name + '\n第 二 形 態', 2000, null);
+      });
+
+      // BGM switch
+      this.time.delayedCall(1400, () => lazyBgm(this, 'bgm_unleash', 0.46));
+
+      // Purple particle storm
+      this.time.delayedCall(800, () => {
+        for (let k = 0; k < 4; k++) {
+          this.time.delayedCall(k * 200, () => {
+            this.spawnSpark(
+              this.enemySprite.x + Phaser.Math.Between(-60, 60),
+              this.enemySprite.y - 60 + Phaser.Math.Between(-40, 20),
+              0xcc44ff, 18
+            );
+          });
+        }
+      });
+
+      // Resume — player gets a free first turn (boss just recovered, feels fair)
+      this.time.delayedCall(3000, () => {
+        this.flashBanner('詠唱攻撃に備えよ！', C.red);
+        this.time.delayedCall(500, () => this.startPlayerTurn());
+      });
     }
 
     // ---- Enemy turn: telegraph -> parry timing ---------------------
@@ -1011,17 +1408,28 @@
       this.tweens.add({
         targets: this.enemySprite, x: this.aliciaHome.x + 150, duration: 130,
         yoyo: true, ease: 'Quad.in',
-        onComplete: () => {
-          this.enemySprite.x = this.enemyHome.x;
-          this.enemyIdle.resume();
-        },
+        onComplete: () => { this.enemySprite.x = this.enemyHome.x; this.enemyIdle.resume(); },
       });
+
+      // カウンタースタンス: absorb the hit entirely
+      if (this.counterStance) {
+        this.counterStance = false;
+        sfx(this, 'se_clash', 0.7);
+        this.spawnSpark(this.alicia.x, this.alicia.y - 70, 0xc89bff, 28);
+        this.flash(0xffffff, 0.5, 160);
+        this.cameras.main.shake(120, 0.006);
+        this.dealToPlayer(0, 'カウンター防御！完全無効！', '#c89bff');
+        this.registerJudge('PERFECT');
+        this.time.delayedCall(700, () => { this.maybeEnterRage(); this.startPlayerTurn(); });
+        return;
+      }
 
       let dmg = incoming;
       if (this.guarding) dmg = Math.round(dmg * 0.5);
 
       let label, lcolor;
-      if (res === 'PERFECT') {
+      const didParry = res === 'PERFECT';
+      if (didParry) {
         dmg = Math.round(dmg * 0.1);
         label = 'パリィ成功！'; lcolor = C.gold;
         this.player.mp = Math.min(this.player.maxMp, this.player.mp + 6);
@@ -1044,7 +1452,7 @@
       }
 
       // ノエル (守護): 被弾時に確率(30%)でダメージを軽減
-      if (dmg > 0 && res !== 'PERFECT' && this.hasAlly('noel') && Math.random() < 0.3) {
+      if (dmg > 0 && !didParry && this.hasAlly('noel') && Math.random() < 0.3) {
         dmg = Math.max(1, Math.round(dmg * 0.55));
         this.allyAct('noel', '守護！');
         this.spawnSpark(this.alicia.x, this.alicia.y - 70, COMPANIONS.noel.color, 14);
@@ -1053,11 +1461,39 @@
       this.time.delayedCall(120, () => {
         this.dealToPlayer(dmg, label, lcolor);
         if (this.player.hp <= 0) { this.time.delayedCall(700, () => this.onPlayerDefeated()); return; }
-        this.time.delayedCall(650, () => {
-          this.guarding = false;
-          this.maybeEnterRage();
-          this.startPlayerTurn();
-        });
+
+        // パリィからの反撃 ability
+        if (didParry && this.abilityParry && this.enemy.hp > 0) {
+          this.time.delayedCall(400, () => this.startParryCounter());
+        } else {
+          this.time.delayedCall(650, () => { this.guarding = false; this.maybeEnterRage(); this.startPlayerTurn(); });
+        }
+      });
+    }
+
+    startParryCounter() {
+      this.flashBanner('反撃チャンス！', C.gold);
+      sfx(this, 'se_fastslash', 0.4);
+      this.startTiming({
+        label: '反撃！ カウンター', speed: 550, perfectHalf: 0.07, goodHalf: 0.20, timeout: 1600, mode: 'attack',
+      }, (res) => {
+        const dmgMap = { PERFECT: 34, GOOD: 17, MISS: 0 };
+        const dmg = dmgMap[res];
+        if (dmg > 0) {
+          this.aliciaIdle.pause();
+          this.alicia.play('alicia_attack');
+          this.tweens.add({ targets: this.alicia, x: this.aliciaHome.x + 80, duration: 80, yoyo: true, ease: 'Quad.out',
+            onComplete: () => { this.alicia.x = this.aliciaHome.x; this.aliciaIdle.resume(); } });
+          sfx(this, res === 'PERFECT' ? 'se_slash' : 'se_fastslash', 0.55);
+          this.spawnSlash(this.enemySprite.x, this.enemySprite.y - 60, res, 0, 1.8);
+          this.time.delayedCall(80, () => {
+            this.dealToEnemy(dmg, res);
+            if (res === 'PERFECT') { this.hitstop(55); this.cameras.main.shake(120, 0.007); this.registerJudge('PERFECT'); }
+          });
+        } else {
+          sfx(this, 'se_hit', 0.25);
+        }
+        this.time.delayedCall(520, () => { this.guarding = false; this.maybeEnterRage(); this.startPlayerTurn(); });
       });
     }
 
@@ -1091,30 +1527,21 @@
       }
     }
 
-    // ---- Boss rage --------------------------------------------------
-    // アリア PHASE 2 — triggered at half HP. BGM changes; unparryable cast attacks unlock.
+    // ---- Phase 2 trigger ----------------------------------------
+    // Sets a pending flag; the cinematic runs at the next afterPlayerAction boundary.
     maybeEnterRage() {
-      if (this.raging || !this.enc.special) return;
-      const at = this.enc.phase2At || 0.35;
+      if (this.raging || !this.enc.special || this.phase2Pending) return;
+      const at = this.enc.phase2At || 0.5;
       if (this.enemy.hp > 0 && this.enemy.hp <= this.enemy.maxHp * at) {
         this.raging = true;
         this.phase = 2;
-        this.showBanner(this.enc.name + '\n第 二 形 態', 1200, null);
-        this.flashBanner('真の力を解放する ―― 詠唱攻撃に備えよ！', C.red);
-        sfx(this, 'se_explosion', 0.55);
-        sfx(this, 'se_slowmo', 0.5);
-        this.cameras.main.shake(500, 0.018);
-        this.flash(0xff3060, 0.6, 320);
-        this.enemySprite.setTint(0xff5555);
-        this.tweens.add({ targets: this.rageVignette, alpha: { from: 0, to: 0.26 }, duration: 700, yoyo: true, repeat: -1 });
-        // Swap to the phase-2 theme (pre-fetched in create; never blocks).
-        lazyBgm(this, 'bgm_unleash', 0.44);
+        this.phase2Pending = true;
       }
     }
 
     restoreEnemyTint() {
       if (!this.enemySprite.active) return;
-      if (this.raging) this.enemySprite.setTint(0xff5555);
+      if (this.raging) this.enemySprite.setTint(0xaa00ff);
       else this.enemySprite.clearTint();
     }
 
@@ -1177,6 +1604,9 @@
               this.scene.start('Battle', {
                 index: this.encIndex + 1, hp: this.player.hp, mp: this.player.mp,
                 sp: this.player.sp, stats: this.stats,
+                abilityParry: this.abilityParry,
+                selectedSkills: this.selectedSkills,
+                firstAllyActDone: this.firstAllyActDone,
               });
             });
           });
@@ -1603,7 +2033,7 @@
     scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
     // Abort stalled asset requests so a hung connection can't freeze the loader forever.
     loader: { timeout: 30000 },
-    scene: [BootScene, TitleScene, BattleScene, ResultScene],
+    scene: [BootScene, TitleScene, TutorialScene, SelectScene, BattleScene, ResultScene],
   };
   window.game = new Phaser.Game(config);
   </script>
