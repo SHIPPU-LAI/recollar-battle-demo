@@ -74,6 +74,15 @@
       parrySpeed: 370, telegraph: 820, scale: 2.0, yOff: 0,
       flavor: '旧王都に巣食う、過ぎ去りし日の亡霊。',
       bossIntro: false, voice: null,
+      prelude: [
+        { sp: 'エリシア', icon: 'main',   tx: '......' },
+        { sp: 'エリシア', icon: 'main',   tx: 'ここが...旧王都' },
+        { sp: 'エリシア', icon: 'main',   tx: 'あそこが魔王がいる王城だね' },
+        { sp: 'エリシア', icon: 'main',   tx: '急がないと' },
+        { sp: null,      icon: null,      tx: '過去の幻影が現れた！' },
+        { sp: 'エリシア', icon: 'main',   tx: 'ッ！' },
+        { sp: 'エリシア', icon: 'main',   tx: '邪魔だ' },
+      ],
     },
     {
       id: 'knight', name: '暗黒騎士 アデル', tag: 'THE DARK KNIGHT',
@@ -88,6 +97,10 @@
         [0.50, '...なかなかやるな'],
         [0.25, '...ッ！まだだ...まだ終わらせん！'],
         [0.08, '魔王さま、やつは危険です...'],
+      ],
+      prelude: [
+        { sp: 'アデル',  icon: 'enemy2', tx: '勇者よ、これ以上は行かせん！' },
+        { sp: 'エリシア', icon: 'main',  tx: 'これは戦うしかなさそうだねッ！！' },
       ],
     },
     {
@@ -104,6 +117,23 @@
         [0.48, 'さて、遊びはここまでにしよう'],
         [0.25, '...ッ！...私だって守らなければならないものがあるの！'],
         [0.08, '...はっ...はっ...そんな...'],
+      ],
+      prelude: [
+        { sp: '魔王',    icon: 'enemy3', tx: 'ようこそ、勇者よ。はじめまして...それとも久しぶりと言うべきかな?' },
+        { sp: 'エリシア', icon: 'main',  tx: 'やはり、アリア...あなたが魔王だったのね...' },
+        { sp: 'アリア',  icon: 'enemy3', tx: 'ふふ、驚くことでもない。' },
+        { sp: 'アリア',  icon: 'enemy3', tx: '私はただ、この世界を滅ぼすための、火種を手に入れただけです。' },
+        { sp: 'エリシア', icon: 'main',  tx: '...私たちは戦ってきた仲間でしょう？ 何故、こんなことを…！' },
+        { sp: 'アリア',  icon: 'enemy3', tx: '仲間...？ あぁ、そうだったね…かつて、私たちは同じ理想で戦った。' },
+        { sp: 'アリア',  icon: 'enemy3', tx: 'でも、忘れたの？ 奴らは私を裏切り、見捨てたんだ。' },
+        { sp: 'アリア',  icon: 'enemy3', tx: 'あの日、私は死んだ。そして、今私が生きているのはただの復讐心からだ。' },
+        { sp: 'アリア',  icon: 'enemy3', tx: '奴らの嘘と裏切りに屈し、私は死んで魔王となった。' },
+        { sp: 'アリア',  icon: 'enemy3', tx: 'しかし、何も変わらない。あなたがいくら剣を振るっても、奴らの本性は変わらない。' },
+        { sp: 'エリシア', icon: 'main',  tx: '違う...人々を信じることを諦めてはいけない！' },
+        { sp: 'アリア',  icon: 'enemy3', tx: '信じる？ フッ...それがどれほど無力な言葉だと思う？' },
+        { sp: 'アリア',  icon: 'enemy3', tx: 'あなたにはそれが最期の光に見えたのなら。' },
+        { sp: 'アリア',  icon: 'enemy3', tx: 'せいぜい、その信じる心で、私を倒してみなさい。' },
+        { sp: 'エリシア', icon: 'main',  tx: 'ッ' },
       ],
     },
   ];
@@ -847,7 +877,6 @@
     // ---- Intro VS banner -------------------------------------------
     introBanner() {
       this.state = 'BANNER';
-      sfx(this, 'se_slowmo', 0.5);
       const afterBanner = () => {
         if (this.encIndex === 0 && this.allies.length) {
           this.allies.forEach(a => this.tweens.add({ targets: a.cont, scaleX: { from: 1.3, to: 1 }, scaleY: { from: 1.3, to: 1 }, duration: 350, ease: 'Back.out' }));
@@ -857,13 +886,129 @@
           this.startPlayerTurn();
         }
       };
-      if (this.enc.bossIntro) {
-        this.showBossIntroCutin(() => {
-          this.showBanner(this.enc.flavor + '\n' + this.enc.name, 900, afterBanner);
-        });
+      const afterPrelude = () => {
+        sfx(this, 'se_slowmo', 0.5);
+        if (this.enc.bossIntro) {
+          this.showBossIntroCutin(() => {
+            this.showBanner(this.enc.flavor + '\n' + this.enc.name, 900, afterBanner);
+          });
+        } else {
+          this.showBanner(this.enc.flavor + '\n' + this.enc.name, 1100, afterBanner);
+        }
+      };
+      if (this.enc.prelude && this.enc.prelude.length) {
+        this.showPreBattleDialogue(this.enc.prelude, afterPrelude);
       } else {
-        this.showBanner(this.enc.flavor + '\n' + this.enc.name, 1100, afterBanner);
+        afterPrelude();
       }
+    }
+
+    // ---- Pre-battle RPG dialogue scene -----------------------------
+    showPreBattleDialogue(lines, cb) {
+      const W = GAME_W, H = GAME_H;
+      const BOX_H = 120;
+      const BOX_Y = H - BOX_H / 2;       // centre of the dialogue box
+      const ICON_X = 52, ICON_Y = BOX_Y; // icon centre
+      const TEXT_X = 108;                 // where speaker name / body start
+
+      // Name colours per speaker
+      const NAME_COL = {
+        エリシア: '#88bbff',
+        アデル:   '#ffaa55',
+        アリア:   '#cc88ff',
+        魔王:     '#ff7799',
+      };
+      // Icon scale per texture
+      const ICON_SCALE = { main: 1.1, enemy1: 0.9, enemy2: 1.0, enemy3: 1.05 };
+      // Enemy icons face left in battle; flip so they face right in dialogue
+      const FLIP_X = { enemy1: true, enemy2: true, enemy3: true, main: false };
+
+      // --- Build persistent UI objects ---
+      const dimOverlay = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.5).setDepth(200);
+
+      const box = this.add.rectangle(W / 2, BOX_Y, W, BOX_H, 0x06060f, 0.96)
+        .setStrokeStyle(2, 0x3322aa).setDepth(201);
+      const topLine = this.add.rectangle(W / 2, H - BOX_H, W, 2, 0x5544cc, 0.8).setDepth(201);
+
+      // Icon container: border rect + sprite
+      const iconBorder = this.add.rectangle(ICON_X, ICON_Y, 70, 80, 0x0a0a20, 0.9)
+        .setStrokeStyle(2, 0x5544cc).setDepth(202);
+      const iconSprite = this.add.sprite(ICON_X, ICON_Y + 14, 'main')
+        .setOrigin(0.5, 1).setDepth(203);
+
+      const nameText = this.add.text(TEXT_X, H - BOX_H + 10, '', {
+        fontFamily: FONT, fontSize: '13px', fontStyle: 'bold', color: '#88bbff',
+      }).setOrigin(0, 0).setDepth(202);
+      const bodyText = this.add.text(TEXT_X, H - BOX_H + 32, '', {
+        fontFamily: FONT, fontSize: '17px', color: '#e8e8ff',
+        wordWrap: { width: W - TEXT_X - 20 },
+      }).setOrigin(0, 0).setDepth(202);
+
+      const hintText = this.add.text(W - 16, H - 12, '▶  ENTER / クリック', {
+        fontFamily: FONT, fontSize: '11px', color: '#4a4a7a',
+      }).setOrigin(1, 1).setDepth(202);
+      this.tweens.add({ targets: hintText, alpha: { from: 1, to: 0.3 }, duration: 600, yoyo: true, repeat: -1 });
+
+      const allObjs = [dimOverlay, box, topLine, iconBorder, iconSprite, nameText, bodyText, hintText];
+
+      // Fade in
+      allObjs.forEach(o => o.setAlpha(0));
+      this.tweens.add({ targets: allObjs, alpha: 1, duration: 280 });
+
+      let page = 0;
+      let advancing = false;
+
+      const showPage = (i) => {
+        const d = lines[i];
+        const isNarration = !d.sp;
+
+        if (isNarration) {
+          iconBorder.setVisible(false);
+          iconSprite.setVisible(false);
+          nameText.setText('');
+          bodyText.setX(W / 2).setOrigin(0.5, 0).setText(d.tx).setColor('#ccccee').setFontStyle('italic');
+        } else {
+          iconBorder.setVisible(true);
+          iconSprite.setVisible(true);
+          iconSprite.setTexture(d.icon)
+            .setFlipX(FLIP_X[d.icon] || false)
+            .setScale(ICON_SCALE[d.icon] || 1.0);
+          nameText.setText(d.sp).setColor(NAME_COL[d.sp] || '#c89bff');
+          bodyText.setX(TEXT_X).setOrigin(0, 0).setText(d.tx).setColor('#e8e8ff').setFontStyle('normal');
+        }
+        sfx(this, 'se_draw', 0.14);
+      };
+
+      showPage(0);
+
+      const advance = () => {
+        if (advancing) return;
+        advancing = true;
+        page++;
+        if (page >= lines.length) {
+          this.tweens.add({
+            targets: allObjs, alpha: 0, duration: 240,
+            onComplete: () => {
+              allObjs.forEach(o => o.destroy());
+              this.input.off('pointerdown', advance);
+              this.input.keyboard.off('keydown-ENTER', advance);
+              this.input.keyboard.off('keydown-SPACE', advance);
+              if (cb) cb();
+            },
+          });
+        } else {
+          showPage(page);
+          advancing = false;
+        }
+      };
+
+      // Small debounce so the first click that triggers battle doesn't also advance page
+      this.time.delayedCall(320, () => {
+        advancing = false;
+        this.input.on('pointerdown', advance);
+        this.input.keyboard.on('keydown-ENTER', advance);
+        this.input.keyboard.on('keydown-SPACE', advance);
+      });
     }
 
     showBossIntroCutin(cb) {
