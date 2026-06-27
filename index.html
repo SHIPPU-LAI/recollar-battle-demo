@@ -64,34 +64,47 @@
     ink:    '#0a0a14',
   };
 
-  // ---- Encounter definitions (a 2-battle gauntlet) -------------------
+  // ---- Encounter definitions -------------------------------------------
   const ENCOUNTERS = [
     {
       id: 'phantom', name: '過去の幻影', tag: 'PHANTOMS OF THE PAST',
-      texture: 'enemy1', idleAnim: null, bg: 'stage1', bgm: 'bgm_battle', // Winning Road
-      // 2体: defeated one at a time (waves).
+      texture: 'enemy1', idleAnim: null, bg: 'stage1', bgm: 'bgm_battle',
       waves: [{ hp: 120, atk: 17 }, { hp: 155, atk: 19 }],
       special: false, specialEvery: 0,
       parrySpeed: 370, telegraph: 820, scale: 2.0, yOff: 0,
       flavor: '旧王都に巣食う、過ぎ去りし日の亡霊。',
+      bossIntro: false, voice: null,
     },
     {
       id: 'knight', name: '暗黒騎士 アデル', tag: 'THE DARK KNIGHT',
-      texture: 'enemy2', idleAnim: null, bg: 'stage2', bgm: 'bgm_boss', // Strike the Despair
+      texture: 'enemy2', idleAnim: null, bg: 'stage2', bgm: 'bgm_boss',
       waves: [{ hp: 360, atk: 27, specialAtk: 48 }],
       special: false, specialEvery: 3,
       parrySpeed: 470, telegraph: 690, scale: 2.3, yOff: 0,
       flavor: '魔王に仕えし、堕ちた騎士。その剣は王城への門を阻む。',
+      bossIntro: true,
+      voice: [
+        [0.75, 'この先には…進ませない'],
+        [0.50, '…なかなかやるな'],
+        [0.25, 'くっ…まだだ！'],
+        [0.08, '魔王様…申し訳ございません…'],
+      ],
     },
     {
       id: 'demon', name: '魔王 アリア', tag: 'THE FALLEN COMRADE',
-      texture: 'enemy3', idleAnim: 'demon_idle', bg: 'stage3', bgm: 'bgm_finale', // phase 1: 終焉を奏でる者
+      texture: 'enemy3', idleAnim: 'demon_idle', bg: 'stage3', bgm: 'bgm_finale',
       waves: [{ hp: 640, atk: 31, specialAtk: 56 }],
       special: true, specialEvery: 3,
-      // Phase 2 (HP <= 50%): BGM -> bgm_unleash + unparryable cast attacks.
       phase2At: 0.5, castAtk: 66,
       parrySpeed: 520, telegraph: 650, scale: 2.6, yOff: -6,
       flavor: 'かつての仲間。裏切られ、復讐に堕ちた。',
+      bossIntro: true,
+      voice: [
+        [0.75, 'まだ…その程度か'],
+        [0.48, '…っ！ちからが…あふれる…！'],
+        [0.25, 'なぜ…まだ立っている…'],
+        [0.08, '…わかった…エリシア…あなたの勝ちよ…'],
+      ],
     },
   ];
 
@@ -392,10 +405,11 @@
      SELECT (アビリティ・スキル選択)
      ===================================================================== */
   const SKILL_POOL = [
-    { key: 'heavy', label: 'ヘヴィースラッシュ', sub: '−12MP  大ダメージ',        icon: '⚔', mp: 12 },
-    { key: 'holy',  label: 'ホーリー・レイン',   sub: '−14MP  ダメージ+HP回復',   icon: '✚', mp: 14 },
-    { key: 'night', label: 'ロード・オブ・ナイト', sub: '−12MP  ダメージ+HP吸収', icon: '☾', mp: 12 },
-    { key: 'counter', label: 'カウンタースタンス', sub: '−12MP  次撃を完全防御',  icon: '◈', mp: 12 },
+    { key: 'heavy',   label: 'ヘヴィースラッシュ', sub: '−12MP  大ダメージ',         icon: '⚔', mp: 12 },
+    { key: 'holy',    label: 'ホーリー・レイン',   sub: '−14MP  ダメージ+HP回復',    icon: '✚', mp: 14 },
+    { key: 'night',   label: 'ロード・オブ・ナイト', sub: '−12MP  ダメージ+HP吸収',  icon: '☾', mp: 12 },
+    { key: 'counter', label: 'カウンタースタンス',  sub: '−12MP  次撃を完全防御',   icon: '◈', mp: 12 },
+    { key: 'charge',  label: '溜め斬り',           sub: '−10MP  詠唱→次T大ダメージ', icon: '▲', mp: 10 },
   ];
 
   class SelectScene extends Phaser.Scene {
@@ -544,6 +558,8 @@
       this.combo = 0;
       this.guarding = false;
       this.counterStance = false; // カウンタースタンス (absorb next hit)
+      this.chargeReady = false;   // 溜め斬り: fires at start of next turn
+      this.voiceShown = {};       // boss voice line thresholds already triggered
       this.enemyTurnCount = 0;
       this.phase = 1;
       this.casting = false;
@@ -801,6 +817,23 @@
       // Boss rage state
       this.raging = false;
 
+      // --- Damage log panel (right side) ---
+      const logX = GAME_W - 6, logY = 108;
+      this.add.rectangle(logX - 82, logY + 63, 160, 148, 0x060614, 0.70)
+        .setStrokeStyle(1, 0x2a2a50).setDepth(48).setOrigin(1, 0);
+      this.add.text(logX - 12, logY + 4, 'LOG', {
+        fontFamily: FONT, fontSize: '10px', color: '#4a4a6a', fontStyle: 'bold',
+      }).setOrigin(1, 0).setDepth(50);
+      this._logLines = [];
+      for (let i = 0; i < 5; i++) {
+        this._logLines.push(
+          this.add.text(logX - 12, logY + 22 + i * 24, '', {
+            fontFamily: FONT, fontSize: '11px', color: '#6a6a90',
+          }).setOrigin(1, 0).setDepth(50)
+        );
+      }
+      this._logEntries = [];
+
       // Intro
       this.time.delayedCall(300, () => this.introBanner());
     }
@@ -809,8 +842,7 @@
     introBanner() {
       this.state = 'BANNER';
       sfx(this, 'se_slowmo', 0.5);
-      this.showBanner(this.enc.flavor + '\n' + this.enc.name, 1100, () => {
-        // Introduce the party once, at the start of the run.
+      const afterBanner = () => {
         if (this.encIndex === 0 && this.allies.length) {
           this.allies.forEach(a => this.tweens.add({ targets: a.cont, scaleX: { from: 1.3, to: 1 }, scaleY: { from: 1.3, to: 1 }, duration: 350, ease: 'Back.out' }));
           this.flashBanner('仲間 シズ・ノエル が 援護する！', '#ffe6a0');
@@ -818,6 +850,57 @@
         } else {
           this.startPlayerTurn();
         }
+      };
+      if (this.enc.bossIntro) {
+        this.showBossIntroCutin(() => {
+          this.showBanner(this.enc.flavor + '\n' + this.enc.name, 900, afterBanner);
+        });
+      } else {
+        this.showBanner(this.enc.flavor + '\n' + this.enc.name, 1100, afterBanner);
+      }
+    }
+
+    showBossIntroCutin(cb) {
+      const W = GAME_W, H = GAME_H;
+      // Black cinematic bars
+      const topBar = this.add.rectangle(W / 2, 0, W, 110, 0x000000).setDepth(200).setOrigin(0.5, 1).setY(-55);
+      const botBar = this.add.rectangle(W / 2, H, W, 110, 0x000000).setDepth(200).setOrigin(0.5, 0).setY(H + 55);
+      this.tweens.add({ targets: topBar, y: 55, duration: 350, ease: 'Quad.out' });
+      this.tweens.add({ targets: botBar, y: H - 55, duration: 350, ease: 'Quad.out' });
+
+      // Enemy portrait slides in from right
+      const portrait = this.add.sprite(W + 240, H / 2 - 20, this.enc.texture)
+        .setOrigin(0.5, 1).setScale(this.enc.scale * 1.9).setDepth(201).setAlpha(0.92)
+        .setY(H - 55 + (this.enc.yOff || 0) * this.enc.scale * 1.9);
+      if (this.enc.idleAnim) portrait.play(this.enc.idleAnim);
+      this.tweens.add({ targets: portrait, x: W * 0.68, duration: 480, ease: 'Quad.out', delay: 80 });
+
+      // Accent lines
+      const lineTop = this.add.rectangle(W / 2, 110, W, 2, 0xcc3344, 0.8).setDepth(201).setAlpha(0);
+      const lineBt  = this.add.rectangle(W / 2, H - 110, W, 2, 0xcc3344, 0.8).setDepth(201).setAlpha(0);
+      this.tweens.add({ targets: [lineTop, lineBt], alpha: 1, duration: 200, delay: 280 });
+
+      // Name slides in from left
+      const nameT = this.add.text(-320, H / 2 - 36, this.enc.name, {
+        fontFamily: FONT, fontSize: '50px', color: '#ffffff', fontStyle: 'bold',
+        stroke: C.ink, strokeThickness: 10,
+      }).setDepth(202).setOrigin(0, 0.5);
+      this.tweens.add({ targets: nameT, x: 58, duration: 420, ease: 'Quad.out', delay: 120 });
+
+      const tagT = this.add.text(-320, H / 2 + 22, '― ' + this.enc.tag + ' ―', {
+        fontFamily: FONT, fontSize: '15px', color: C.red, fontStyle: 'bold',
+      }).setDepth(202).setOrigin(0, 0.5);
+      this.tweens.add({ targets: tagT, x: 62, duration: 420, ease: 'Quad.out', delay: 200 });
+
+      sfx(this, 'se_slash', 0.55);
+      this.flash(0xffffff, 0.45, 200);
+
+      const all = [topBar, botBar, lineTop, lineBt, nameT, tagT, portrait];
+      this.time.delayedCall(1700, () => {
+        this.tweens.add({
+          targets: all, alpha: 0, duration: 380, ease: 'Quad.in',
+          onComplete: () => { all.forEach(o => o.destroy()); if (cb) cb(); },
+        });
       });
     }
 
@@ -944,10 +1027,50 @@
         this.allyAct('noel', '再生の祈り');
         this.popText(this.alicia.x + 18, this.alicia.y - 150, '+' + h, C.green, 18);
       }
+      // 溜め斬り: auto-release on this turn start
+      if (this.chargeReady) {
+        this.chargeReady = false;
+        this.time.delayedCall(200, () => this.releaseCharge());
+        return;
+      }
       this.state = 'COMMAND';
       this.setSkillMenuVisible(false);
       this.setMenuVisible(true);
       this.showHint('コマンドを選択');
+    }
+
+    releaseCharge() {
+      this.state = 'OVER';
+      this.setMenuVisible(false);
+      sfx(this, 'se_slash', 0.7);
+      sfx(this, 'se_magiccircle', 0.5);
+      this.showBanner('溜め斬り  発動！', 700, null);
+      this.flash(0xffd060, 0.85, 260);
+      this.cameras.main.shake(300, 0.014);
+      this.hitstop(120);
+      this.aliciaIdle.pause();
+      this.alicia.play('alicia_attack');
+      this.tweens.add({
+        targets: this.alicia, x: this.aliciaHome.x + 160, duration: 100, yoyo: true, ease: 'Quad.out',
+        onComplete: () => { this.alicia.x = this.aliciaHome.x; this.aliciaIdle.resume(); },
+      });
+      // Big slash VFX
+      for (let k = 0; k < 4; k++) {
+        this.time.delayedCall(k * 40, () => {
+          this.spawnSlash(
+            this.enemySprite.x + Phaser.Math.Between(-30, 30),
+            this.enemySprite.y - 70 + Phaser.Math.Between(-20, 10),
+            'PERFECT', k, 2.8
+          );
+        });
+      }
+      this.chromaHit(7);
+      this.time.delayedCall(180, () => {
+        // Always PERFECT-tier damage
+        this.dealToEnemy(95, 'PERFECT', true);
+        this.registerJudge('PERFECT');
+        this.time.delayedCall(480, () => this.afterPlayerAction());
+      });
     }
 
     confirmCommand() {
@@ -1007,10 +1130,29 @@
       this.player.hp = Math.min(this.player.maxHp, this.player.hp + h);
       this.refreshStatsUI();
       this.popText(this.alicia.x + 20, this.alicia.y - 150, '+' + h + ' HP', C.green, 22);
+      this.addLog('エリシア', '+' + h + 'HP', C.green);
     }
 
     // ---- SKILL execution (timing magic with per-skill effects) -----
     doSkill(key, mpCost) {
+      // 溜め斬り — 1ターン詠唱→次ターン自動大ダメージ
+      if (key === 'charge') {
+        this.player.mp -= mpCost;
+        this.refreshStatsUI();
+        this.chargeReady = true;
+        sfx(this, 'se_draw', 0.55);
+        sfx(this, 'se_magiccircle', 0.35);
+        // Glow aura on Alicia
+        const aura = this.add.circle(this.alicia.x, this.alicia.y - 60, 44, 0xffd060, 0.0)
+          .setDepth(18).setBlendMode(Phaser.BlendModes.ADD);
+        this.tweens.add({ targets: aura, fillAlpha: 0.55, scaleX: 1.6, scaleY: 1.6, duration: 400, ease: 'Sine.easeOut' });
+        this.tweens.add({ targets: aura, fillAlpha: 0.2, scaleX: 1.0, scaleY: 1.0, duration: 600, delay: 400, ease: 'Sine.easeIn', onComplete: () => aura.destroy() });
+        this.showBanner('溜め斬り…  詠唱中', 900, null);
+        this.addLog('エリシア', '溜め…', C.gold);
+        this.time.delayedCall(820, () => this.afterPlayerAction());
+        return;
+      }
+
       // カウンタースタンス — no timing, just set the stance flag
       if (key === 'counter') {
         this.player.mp -= mpCost;
@@ -1107,20 +1249,37 @@
       this.aliciaIdle.resume();
       const allPerfect = this.attackResults.every(r => r === 'PERFECT');
       if (allPerfect) {
-        // Finisher!
-        this.time.delayedCall(120, () => {
-          this.showBanner('P E R F E C T   C O M B O !', 700, null);
-          sfx(this, 'se_explosion', 0.5);
-          this.flash(0xfff2b0, 0.7, 220);
-          this.cameras.main.shake(260, 0.012);
-          this.spawnSlash(this.enemySprite.x, this.enemySprite.y - 60, 'PERFECT', 4, 3.2);
-          this.dealToEnemy(28, 'PERFECT', true);
-          // シズ：パーフェクトコンボに反応して追撃 (60%)
-          if (this.hasAlly('shizu') && this.enemy.hp > 0 && Math.random() < 0.6) {
-            this.time.delayedCall(380, () => this.shizuFollowUp());
-          } else {
-            this.time.delayedCall(420, () => this.afterPlayerAction());
-          }
+        // PERFECT COMBO cinematic finisher
+        this.time.delayedCall(100, () => {
+          // Slow-mo + zoom in
+          this.hitstop(160);
+          this.cameras.main.zoomTo(1.08, 200, 'Sine.easeOut');
+          this.time.delayedCall(220, () => {
+            this.cameras.main.zoomTo(1.0, 260, 'Sine.easeIn');
+            this.showBanner('★  P E R F E C T   C O M B O  ★', 800, null);
+            sfx(this, 'se_explosion', 0.55);
+            sfx(this, 'se_magiccircle', 0.4);
+            this.flash(0xfff2b0, 0.9, 280);
+            this.cameras.main.shake(340, 0.015);
+            this.chromaHit(6);
+            // Multi-slash burst
+            for (let k = 0; k < 5; k++) {
+              this.time.delayedCall(k * 38, () => {
+                this.spawnSlash(
+                  this.enemySprite.x + Phaser.Math.Between(-36, 36),
+                  this.enemySprite.y - 60 + Phaser.Math.Between(-28, 18),
+                  'PERFECT', k, 2.6 + k * 0.1
+                );
+              });
+            }
+            this.dealToEnemy(28, 'PERFECT', true);
+            // シズ：パーフェクトコンボに反応して追撃 (60%)
+            if (this.hasAlly('shizu') && this.enemy.hp > 0 && Math.random() < 0.6) {
+              this.time.delayedCall(420, () => this.shizuFollowUp());
+            } else {
+              this.time.delayedCall(460, () => this.afterPlayerAction());
+            }
+          });
         });
       } else {
         this.time.delayedCall(160, () => this.afterPlayerAction());
@@ -1507,12 +1666,15 @@
       const size = res === 'PERFECT' ? (big ? 52 : 40) : (res === 'MISS' ? 24 : 32);
       const tag = res === 'MISS' ? 'MISS ' : '';
       this.popText(this.enemySprite.x + Phaser.Math.Between(-20, 20), this.enemySprite.y - 90, tag + dmg, col, size);
-      // flinch
       this.enemySprite.setTint(0xff8888);
       this.time.delayedCall(90, () => this.restoreEnemyTint());
       this.tweens.add({ targets: this.enemySprite, x: this.enemyHome.x + 14, duration: 50, yoyo: true });
       if (res !== 'MISS') sfx(this, 'se_hit', 0.3);
+      if (res === 'PERFECT' && big) this.chromaHit(5);
+      const encShortName = this.enc.name.split(' ').pop();
+      this.addLog((res === 'PERFECT' ? '★' : '') + encShortName, res !== 'MISS' ? '-' + dmg : 'MISS', res === 'PERFECT' ? C.gold : col);
       this.maybeEnterRage();
+      this.checkBossVoice();
     }
 
     dealToPlayer(dmg, label, lcolor) {
@@ -1524,7 +1686,64 @@
       if (dmg > 0) {
         this.alicia.setTint(0xff8080);
         this.time.delayedCall(100, () => { if (this.alicia.active) this.alicia.clearTint(); });
+        this.addLog('エリシア', '-' + dmg, C.red);
+        if (dmg >= 30) this.chromaHit(8);
+      } else {
+        this.addLog('エリシア', label.slice(0, 10), lcolor);
       }
+    }
+
+    chromaHit(px = 5) {
+      const c = this.game.canvas;
+      c.style.filter = 'saturate(2) contrast(1.2) brightness(1.3)';
+      c.style.transform = `translate(${px}px, 0)`;
+      window.setTimeout(() => {
+        c.style.transform = `translate(-${px}px, 0)`;
+        window.setTimeout(() => { c.style.filter = ''; c.style.transform = ''; }, 55);
+      }, 55);
+    }
+
+    addLog(label, detail, color) {
+      this._logEntries = this._logEntries || [];
+      this._logEntries.unshift({ label, detail, color: color || '#9a9ac0' });
+      if (this._logEntries.length > 5) this._logEntries.pop();
+      (this._logLines || []).forEach((t, i) => {
+        const e = this._logEntries[i];
+        t.setText(e ? (e.label + ' ' + e.detail) : '');
+        t.setColor(e ? (i === 0 ? (e.color || '#e8e8ff') : '#6a6a90') : '#3a3a5a');
+      });
+    }
+
+    checkBossVoice() {
+      if (!this.enc.voice || this.enemy.hp <= 0) return;
+      const ratio = this.enemy.hp / this.enemy.maxHp;
+      for (const [threshold, text] of this.enc.voice) {
+        const key = String(threshold);
+        if (ratio <= threshold && !this.voiceShown[key]) {
+          this.voiceShown[key] = true;
+          this.showVoiceLine(this.enc.name.split(' ').pop(), text);
+          break;
+        }
+      }
+    }
+
+    showVoiceLine(name, text) {
+      const W = GAME_W, H = GAME_H;
+      const box = this.add.rectangle(W / 2, H - 112, W - 44, 58, 0x060614, 0.92)
+        .setStrokeStyle(2, 0x5533aa).setDepth(130).setAlpha(0);
+      const nameT = this.add.text(42, H - 133, name + '：', {
+        fontFamily: FONT, fontSize: '12px', color: '#c89bff', fontStyle: 'bold',
+      }).setDepth(131).setAlpha(0).setOrigin(0, 0.5);
+      const bodyT = this.add.text(42, H - 109, '「' + text + '」', {
+        fontFamily: FONT, fontSize: '14px', color: '#e8e8ff',
+      }).setDepth(131).setAlpha(0).setOrigin(0, 0.5);
+      this.tweens.add({ targets: [box, nameT, bodyT], alpha: 1, duration: 220 });
+      this.time.delayedCall(2400, () => {
+        this.tweens.add({
+          targets: [box, nameT, bodyT], alpha: 0, duration: 320,
+          onComplete: () => { box.destroy(); nameT.destroy(); bodyT.destroy(); },
+        });
+      });
     }
 
     // ---- Phase 2 trigger ----------------------------------------
@@ -1591,7 +1810,11 @@
       const isLast = this.encIndex >= ENCOUNTERS.length - 1;
       this.time.delayedCall(1100, () => {
         if (isLast) {
-          this.scene.start('Result', { win: true, stats: this.stats });
+          this.cameras.main.fadeOut(700, 0, 0, 0);
+          this.cameras.main.once('camerafadeoutcomplete', () => {
+            this.scene.start('Ending', { stats: this.stats });
+          });
+          return;
         } else {
           // heal a bit and advance
           const healHp = Math.round(this.player.maxHp * 0.35);
@@ -1857,6 +2080,99 @@
   }
 
   /* =====================================================================
+     ENDING (アリア撃破後のエピローグ会話)
+     ===================================================================== */
+  class EndingScene extends Phaser.Scene {
+    constructor() { super('Ending'); }
+    init(data) { this.stats = data.stats || {}; }
+
+    create() {
+      const W = GAME_W, H = GAME_H;
+      const bg = this.add.image(W / 2, H / 2, 'stage3');
+      fitCover(bg, W, H);
+      bg.setAlpha(0.5).setTint(0x1a1228);
+      this.add.rectangle(W / 2, H / 2, W, H, 0x050510, 0.55);
+
+      stopBgm(this);
+      this.time.delayedCall(600, () => lazyBgm(this, 'bgm_battle', 0.22));
+
+      const LINES = [
+        { sp: 'エリシア', tx: 'アリア…もう終わりだ' },
+        { sp: 'アリア',   tx: '…エリシア。久しぶりね' },
+        { sp: 'アリア',   tx: 'あの頃の約束、まだ覚えてる？' },
+        { sp: 'エリシア', tx: 'ああ。"世界を変えよう"って…' },
+        { sp: 'アリア',   tx: 'ふふ…馬鹿ね、あなたは' },
+        { sp: 'アリア',   tx: '…ごめんなさい。守ってあげられなかった' },
+        { sp: 'エリシア', tx: 'アリア！' },
+        { sp: '―',       tx: '――――――' },
+        { sp: '',         tx: 'かつての友を、討ち果たした…' },
+      ];
+      this.lines = LINES;
+      this.page = -1;
+
+      // Aria silhouette (right, faded)
+      this.ariaImg = this.add.sprite(W * 0.73, GROUND_Y + 4, 'enemy3')
+        .setOrigin(0.5, 1).setScale(2.5).setAlpha(0).setTint(0x6633aa);
+      if (this.anims.exists('demon_idle')) this.ariaImg.play('demon_idle');
+      // Alicia sprite (left)
+      this.aliciaImg = this.add.sprite(W * 0.29, GROUND_Y + 4, 'main')
+        .setOrigin(0.5, 1).setScale(2.4).setAlpha(0);
+
+      // Dialogue box
+      this.dlgBox = this.add.rectangle(W / 2, H - 82, W - 52, 108, 0x060614, 0.92)
+        .setStrokeStyle(2, 0x4433aa).setDepth(10).setAlpha(0);
+      this.dlgSpeaker = this.add.text(44, H - 136, '', {
+        fontFamily: FONT, fontSize: '13px', color: '#c89bff', fontStyle: 'bold',
+      }).setDepth(11).setAlpha(0).setOrigin(0, 0.5);
+      this.dlgText = this.add.text(44, H - 108, '', {
+        fontFamily: FONT, fontSize: '17px', color: '#e8e8ff',
+        wordWrap: { width: W - 100 },
+      }).setDepth(11).setAlpha(0).setOrigin(0, 0.5);
+      this.dlgHint = this.add.text(W - 44, H - 42, '▶', {
+        fontFamily: FONT, fontSize: '14px', color: '#6a6a9a',
+      }).setOrigin(1, 0.5).setDepth(11);
+      this.tweens.add({ targets: this.dlgHint, alpha: { from: 1, to: 0.3 }, duration: 600, yoyo: true, repeat: -1 });
+
+      this.cameras.main.fadeIn(900, 0, 0, 0);
+      this.time.delayedCall(400, () => this.advance());
+
+      this.input.keyboard.on('keydown-ENTER', () => this.advance());
+      this.input.keyboard.on('keydown-SPACE', () => this.advance());
+      this.input.on('pointerdown', () => this.advance());
+    }
+
+    advance() {
+      this.page++;
+      if (this.page >= this.lines.length) { this.finish(); return; }
+      const d = this.lines[this.page];
+      sfx(this, 'se_draw', 0.18);
+
+      if (this.page === 0) {
+        this.tweens.add({ targets: [this.aliciaImg, this.ariaImg, this.dlgBox, this.dlgSpeaker, this.dlgText], alpha: 1, duration: 500 });
+      }
+      this.dlgSpeaker.setText(d.sp ? d.sp + '：' : '');
+      this.dlgText.setText(d.tx);
+
+      const isAlicia = d.sp === 'エリシア';
+      const isAria   = d.sp === 'アリア';
+      this.aliciaImg.setAlpha(isAlicia ? 1.0 : 0.45);
+      this.ariaImg.setAlpha(isAria ? 0.80 : 0.30);
+      if (d.sp === '―' || d.sp === '') {
+        this.aliciaImg.setAlpha(0.3);
+        this.ariaImg.setAlpha(0.15);
+      }
+    }
+
+    finish() {
+      if (this._done) return; this._done = true;
+      this.cameras.main.fadeOut(900, 0, 0, 0);
+      this.cameras.main.once('camerafadeoutcomplete', () => {
+        this.scene.start('Result', { win: true, stats: this.stats });
+      });
+    }
+  }
+
+  /* =====================================================================
      RESULT
      ===================================================================== */
   class ResultScene extends Phaser.Scene {
@@ -1905,15 +2221,44 @@
         this.add.text(W / 2 + 180, y, r[1], { fontFamily: FONT, fontSize: '18px', color: C.gold, fontStyle: 'bold' }).setOrigin(1, 0.5);
       });
 
-      // Rank (a little reward)
+      // Rank
       if (this.win) {
         const score = (this.stats.perfect || 0) * 10 + (this.stats.maxCombo || 0) * 8 - (this.stats.turns || 0) * 2;
         let rank = 'C';
         if (score >= 110) rank = 'S'; else if (score >= 80) rank = 'A'; else if (score >= 50) rank = 'B';
-        const rk = this.add.text(W / 2, panelY + 96, 'RANK  ' + rank, {
-          fontFamily: FONT, fontSize: '24px', color: rank === 'S' ? C.gold : C.white, fontStyle: 'bold',
+
+        const rankColors = { S: C.gold, A: '#d0d8ff', B: '#88e0aa', C: '#c7c7e0' };
+        const rankMsgs = {
+          S: '完全制覇！― 伝説の戦士',
+          A: '見事な戦い！ 称賛に値する',
+          B: 'よく戦った。次はさらに上を',
+          C: '戦いは終わった…さらに磨け',
+        };
+
+        // Rank letter
+        const rk = this.add.text(W / 2, panelY + 90, rank, {
+          fontFamily: FONT, fontSize: '72px', color: rankColors[rank], fontStyle: 'bold',
+          stroke: C.ink, strokeThickness: 12,
+        }).setOrigin(0.5).setAlpha(0).setScale(0.2);
+        this.time.delayedCall(600, () => {
+          sfx(this, rank === 'S' ? 'se_magiccircle' : 'se_fastslash', 0.5);
+          this.tweens.add({ targets: rk, alpha: 1, scale: 1, duration: 420, ease: 'Back.out' });
+          if (rank === 'S') {
+            this.cameras.main.shake(200, 0.012);
+            this.spawnRankParticles(W / 2, panelY + 90, 0xffd060);
+          } else if (rank === 'A') {
+            this.spawnRankParticles(W / 2, panelY + 90, 0xa0b0ff);
+          }
+        });
+
+        // Rank message
+        const msg = this.add.text(W / 2, panelY + 156, rankMsgs[rank], {
+          fontFamily: FONT, fontSize: '16px', color: rankColors[rank],
         }).setOrigin(0.5).setAlpha(0);
-        this.tweens.add({ targets: rk, alpha: 1, scale: { from: 2, to: 1 }, duration: 400, delay: 600, ease: 'Back.out' });
+        this.time.delayedCall(1100, () => {
+          this.tweens.add({ targets: msg, alpha: 1, duration: 380 });
+        });
+
         this.confetti();
       }
 
@@ -1947,6 +2292,16 @@
         tint: [0xffd54a, 0x54e08a, 0x5ab0ff, 0xff5a6e, 0xffffff],
       }).setDepth(5);
       this.time.delayedCall(2600, () => p.stop());
+    }
+
+    spawnRankParticles(x, y, color) {
+      const p = this.add.particles(x, y, 'spark', {
+        speed: { min: 60, max: 220 }, angle: { min: 0, max: 360 },
+        scale: { start: 0.9, end: 0 }, lifespan: { min: 500, max: 900 },
+        quantity: 40, blendMode: 'ADD', tint: color, emitting: false,
+      }).setDepth(30);
+      p.explode(40);
+      this.time.delayedCall(1000, () => p.destroy());
     }
   }
 
@@ -2033,7 +2388,7 @@
     scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
     // Abort stalled asset requests so a hung connection can't freeze the loader forever.
     loader: { timeout: 30000 },
-    scene: [BootScene, TitleScene, TutorialScene, SelectScene, BattleScene, ResultScene],
+    scene: [BootScene, TitleScene, TutorialScene, SelectScene, BattleScene, EndingScene, ResultScene],
   };
   window.game = new Phaser.Game(config);
   </script>
